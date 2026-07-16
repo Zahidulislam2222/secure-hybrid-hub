@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0.0",
+  "evaluation_id": "gemma3-1b-complex-polyrepo-2026-07-17",
+  "evaluated_at": "2026-07-17T02:12:40+06:00",
+  "system_id": "gemma-complex-platform",
+  "task_id": "task-gemma-complex-build",
+  "model": "gemma3:1b",
+  "adapter": "codex-local",
+  "transport": "bounded-local-ollama-cli",
+  "topology": {
+    "type": "polyrepo-microservices",
+    "repository_count": 4,
+    "repositories": ["contracts", "workflow-service", "notification-service", "api-gateway"]
+  },
+  "security_boundary": {
+    "internet_with_repository": false,
+    "cloud_code_egress": false,
+    "cloud_credentials_injected": false,
+    "model_secret_access": false,
+    "model_production_access": false,
+    "real_client_data_used": false,
+    "real_credentials_used": false
+  },
+  "requested_complexity": [
+    "versioned cross-service contracts",
+    "multi-tenant isolation and role authorization",
+    "idempotent commands and event consumption",
+    "optimistic concurrency",
+    "UTC deadline scheduling",
+    "transactional audit outbox",
+    "notification retries and dead-letter behavior",
+    "gateway validation and safe errors",
+    "cross-service contract and integration tests"
+  ],
+  "configured_recovery": "one implementation attempt plus up to three bounded repair attempts",
+  "final_state": "BLOCKED_QUALITY",
+  "block_reason": "bounded local worker output failures exhausted",
+  "broker_accepted_implementation_attempts": 0,
+  "files_applied": 0,
+  "quality_runs": 0,
+  "release_records": 0,
+  "verified": false,
+  "worktrees_clean": true,
+  "active_leases_after_completion": 0,
+  "audit_chain_valid": true,
+  "conclusion": "The 1B Gemma model did not satisfy the typed multi-repository implementation contract. Detailed instructions alone did not overcome model capability limits. The Hub failed closed and preserved clean recoverable worktrees.",
+  "safe_next_options": [
+    "evaluate Gemma on smaller bounded component tasks",
+    "approve a stronger local coding model and repeat the same unchanged acceptance task",
+    "retain deterministic quality gates and never loosen the contract to force a pass"
+  ],
+  "production_readiness_claim": false
+}
