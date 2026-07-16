@@ -205,8 +205,8 @@ class CLIAcceptanceTests(IntegrationBase):
         self.assertEqual(run["result"]["task"]["state"], "WORKSPACES_READY")
         status = self.invoke("status", "task-cli")
         self.assertEqual(status["result"]["state"], "WORKSPACES_READY")
-        blocked = self.invoke("research", "task-cli", expected=2)
-        self.assertEqual(blocked["error"], "AuthorizationRequired")
+        blocked = self.invoke("research", "fetch", "task-cli", "--url", "https://docs.python.org/3/", expected=2)
+        self.assertEqual(blocked["error"], "PolicyDenied")
 
     def test_task_classification_cannot_be_lowered_below_system(self):
         project = self.root / "classified-project"
@@ -215,6 +215,27 @@ class CLIAcceptanceTests(IntegrationBase):
         self.invoke("system", "approve", "health-system", "--approver", "health-owner")
         run = self.invoke("run", "Synthetic low label", "--system", "health-system", "--classification", "R0", "--task-id", "task-classified", "--through", "scoped")
         self.assertEqual(run["result"]["classification"], "R2")
+
+    def test_cli_quality_runs_targeted_then_full_with_deterministic_evidence(self):
+        project = self.root / "quality-cli-project"
+        project.mkdir()
+        (project / "app.py").write_text("def ready():\n    return True\n", encoding="utf-8")
+        tests = project / "tests"
+        tests.mkdir()
+        (tests / "test_app.py").write_text("import unittest\nfrom app import ready\nclass T(unittest.TestCase):\n def test_ready(self): self.assertTrue(ready())\n", encoding="utf-8")
+        git_repo(project)
+        initialized = self.invoke("system", "init", "--id", "quality-cli", "--client", "quality-client", "--name", "Quality CLI", "--root", str(project), "--profile", "standard", "--purpose", "Synthetic quality CLI")
+        repo_id = initialized["result"]["discovery"]["repositories"][0]["repo_id"]
+        self.invoke("system", "approve", "quality-cli", "--approver", "quality-owner")
+        run = self.invoke("run", "Change ready logic", "--system", "quality-cli", "--task-id", "task-quality-cli", "--create-workspaces", "--repo", repo_id)
+        workspace = Path(run["result"]["workspace"]["repositories"][0]["workspace"])
+        (workspace / "app.py").write_text("def ready():\n    return 3 * 3 == 9\n", encoding="utf-8")
+        targeted = self.invoke("test", "task-quality-cli", "--scope", "targeted")
+        self.assertTrue(targeted["result"]["passed"], targeted)
+        self.assertEqual(self.invoke("status", "task-quality-cli")["result"]["state"], "TARGETED_TESTING")
+        full = self.invoke("test", "task-quality-cli", "--scope", "full")
+        self.assertTrue(full["result"]["passed"], full)
+        self.assertEqual(self.invoke("status", "task-quality-cli")["result"]["state"], "FULL_QUALITY_GATES")
 
 
 if __name__ == "__main__":

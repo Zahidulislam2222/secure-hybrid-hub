@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-4",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-4",
+  "state": "completed",
+  "created_at": "2026-07-16T23:59:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "repository", "quality-command-set", "implementation-task"],
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "delivered": [
+    "human-proposed and human-approved broker-owned quality command sets",
+    "argv-only command execution without model-generated shell strings",
+    "targeted and full deterministic quality runs with per-repository required gates",
+    "single-repository, monorepo affected-component, and combined polyrepo integration snapshots",
+    "disposable execution copies protected by Landlock and user/PID/IPC/UTS/network namespaces",
+    "clean environments, bounded time/output/process/file/memory resources, and hashed sanitized evidence",
+    "secret, PHI, PII, privilege, test-integrity, contract-compatibility, and destructive-migration checks",
+    "CLI state progression from workspace through targeted and full quality gates",
+    "quality run dossier checkpoints and append-only audit events"
+  ],
+  "evidence": ["tests/test_quality.py", "tests/test_integration.py", "verification/phase-4.json"],
+  "unresolved_risks": [
+    "Same-user agents can still read broker SQLite files unless an OS-separated broker service owns runtime storage",
+    "CLI approver names are attributable audit labels, not cryptographically authenticated human identities",
+    "Scanners cannot guarantee detection of every secret, PHI, PII, privileged item, or semantic test weakening",
+    "Large and non-Python projects require explicit approved command sets and may require tuned broker-owned resource limits",
+    "Windows executables are denied because WSL namespaces and Landlock cannot confine a Windows child process",
+    "Implementation application, repair orchestration, research, DLP, cloud review, and deployment remain unavailable"
+  ],
+  "next_allowed_phase": "phase-5-code-and-offline-security-tests; network service installation or live fetch requires separate authorization"
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "Secure Hybrid Hub Phase 5 isolated research, offline and mocked-boundary verification",
+  "verified_at": "2026-07-17T00:20:00+06:00",
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "cloud_egress_enabled": false,
+  "live_research_enabled": false,
+  "searxng_installed_or_started": false,
+  "real_credentials_used": false,
+  "real_client_data_used": false,
+  "production_access_used": false,
+  "downloads_or_installations": false,
+  "automated_test_command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
+  "automated_test_count": 58,
+  "automated_test_status": "passed",
+  "validated_areas": [
+    "research-policy-approval", "separate-live-network-gate", "exact-domain-policy",
+    "https-only", "credential-and-private-query-rejection", "dns-ssrf-denial",
+    "redirect-revalidation-design", "mime-and-size-limits", "robots-fail-closed",
+    "prompt-injection-labeling", "content-addressed-provenance", "client-cache-separation",
+    "cache-first-degradation", "local-only-degradation", "searxng-discovery-boundary",
+    "research-filesystem-isolation", "no-repository-access", "audit-integrity"
+  ],
+  "live_network_calls": 0,
+  "production_readiness_claim": false,
+  "reason": "Live network/service approval and Phases 6–11 remain incomplete"
+}

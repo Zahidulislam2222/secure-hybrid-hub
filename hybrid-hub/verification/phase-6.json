@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "Secure Hybrid Hub Phase 6 synthetic secret capabilities and offline egress DLP",
+  "verified_at": "2026-07-17T00:45:00+06:00",
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "cloud_egress_enabled": false,
+  "live_research_enabled": false,
+  "real_secret_backend_configured": false,
+  "real_credentials_used": false,
+  "real_client_data_used": false,
+  "production_access_used": false,
+  "downloads_or_installations": false,
+  "automated_test_command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
+  "automated_test_count": 67,
+  "automated_test_status": "passed",
+  "validated_areas": [
+    "secret-capability-approval", "synthetic-backend-only", "no-network-secret-runner",
+    "raw-and-encoded-redaction", "independent-secret-absence-check", "cross-system-denial",
+    "clean-secret-evidence", "audit-and-database-canary-absence", "explicit-file-egress",
+    "archive-binary-log-database-image-key-and-symlink-denial", "unicode-control-denial",
+    "credential-connection-phi-pii-privilege-scanning", "sealed-manifest",
+    "tamper-blocking", "human-bundle-approval", "managed-global-transmission-deny"
+  ],
+  "synthetic_canary_exposure": false,
+  "bundle_transmission_attempts": 0,
+  "production_readiness_claim": false,
+  "reason": "Real backend/provider authorization and Phases 7–11 remain incomplete"
+}

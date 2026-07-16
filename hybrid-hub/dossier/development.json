@@ -17,19 +17,26 @@
   },
   "components": [
     "broker", "policy", "registry", "topology", "dossier",
-    "local-workers", "workspaces", "integrations"
+    "local-workers", "workspaces", "quality-runner", "research-worker",
+    "secret-capability-runner", "egress-dlp", "integrations"
   ],
-  "implemented_scope": "Phases 0–3 local-only first slice",
+  "implemented_scope": "Phases 0–6 with live research, real secrets, and cloud transmission disabled",
   "human_readable_dossier": "../../PROJECT-DOSSIER.md",
   "phase_checkpoints": [
     "checkpoints/phase-0.json",
     "checkpoints/phase-1.json",
     "checkpoints/phase-2.json",
-    "checkpoints/phase-3.json"
+    "checkpoints/phase-3.json",
+    "checkpoints/phase-4.json",
+    "checkpoints/phase-5.json",
+    "checkpoints/phase-6.json"
   ],
-  "verification_evidence": ["verification/phase-0-3.json"],
+  "verification_evidence": ["verification/phase-0-3.json", "verification/phase-4.json", "verification/phase-5.json", "verification/phase-6.json"],
   "unresolved_risks": [
-    "Quality-engine, research-network, DLP/secret-runner, cloud, deployment, and regulated pilot phases are not authorized",
-    "Installed small models are evaluated only for plumbing, not production coding quality"
+    "Live research, SearXNG, real secret backends, and cloud transmission remain disabled until separately approved; cloud adapters, orchestration, deployment, and regulated pilot phases are not implemented",
+    "Installed small models are evaluated only for plumbing, not production coding quality",
+    "Same-user direct runtime database access and local approver identity require operational hardening before regulated use",
+    "Quality execution requires Linux Landlock and user/PID/IPC/UTS/network namespace support; Windows executables are denied",
+    "Secret and regulated-data scanners have documented false-positive and false-negative limits"
   ]
 }

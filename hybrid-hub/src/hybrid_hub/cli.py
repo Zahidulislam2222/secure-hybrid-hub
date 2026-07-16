@@ -116,7 +116,93 @@ def _parser() -> argparse.ArgumentParser:
     audit_sub.add_parser("verify")
     audit_sub.add_parser("export")
 
-    for name in ("research", "inspect-egress", "test", "verify", "deploy", "promote"):
+    research = sub.add_parser("research")
+    research_sub = research.add_subparsers(dest="research_command", required=True)
+    research_propose = research_sub.add_parser("propose")
+    research_propose.add_argument("system_id")
+    research_propose.add_argument("--domain", action="append", required=True)
+    research_propose.add_argument("--proposer", required=True)
+    research_propose.add_argument("--max-bytes", type=int, default=1_048_576)
+    research_propose.add_argument("--timeout", type=int, default=20)
+    research_propose.add_argument("--minimum-interval", type=int, default=2)
+    research_propose.add_argument("--searxng", action="store_true")
+    research_approve = research_sub.add_parser("approve")
+    research_approve.add_argument("policy_id")
+    research_approve.add_argument("--approver", required=True)
+    research_approve.add_argument("--enable-live", action="store_true")
+    research_show = research_sub.add_parser("show")
+    research_show.add_argument("policy_id")
+    research_fetch = research_sub.add_parser("fetch")
+    research_fetch.add_argument("task_id")
+    research_fetch.add_argument("--url", required=True)
+    research_discover = research_sub.add_parser("discover")
+    research_discover.add_argument("task_id")
+    research_discover.add_argument("query")
+    research_discover.add_argument("--limit", type=int, default=10)
+    research_ingest = research_sub.add_parser("ingest-offline")
+    research_ingest.add_argument("task_id")
+    research_ingest.add_argument("--url", required=True)
+    research_ingest.add_argument("--content", type=Path, required=True)
+    research_ingest.add_argument("--media-type", default="text/plain")
+    research_search = research_sub.add_parser("search-cache")
+    research_search.add_argument("task_id")
+    research_search.add_argument("query")
+    research_search.add_argument("--limit", type=int, default=5)
+    research_get = research_sub.add_parser("get")
+    research_get.add_argument("task_id")
+    research_get.add_argument("evidence_id")
+    research_resolve = research_sub.add_parser("resolve")
+    research_resolve.add_argument("task_id")
+    research_resolve.add_argument("query")
+    research_resolve.add_argument("--official-url", action="append", default=[])
+
+    secret = sub.add_parser("secret")
+    secret_sub = secret.add_subparsers(dest="secret_command", required=True)
+    secret_propose = secret_sub.add_parser("propose")
+    secret_propose.add_argument("system_id")
+    secret_propose.add_argument("--capability", type=Path, required=True)
+    secret_propose.add_argument("--proposer", required=True)
+    secret_approve = secret_sub.add_parser("approve")
+    secret_approve.add_argument("capability_id")
+    secret_approve.add_argument("--approver", required=True)
+    secret_show = secret_sub.add_parser("show")
+    secret_show.add_argument("capability_id")
+    secret_run = secret_sub.add_parser("run")
+    secret_run.add_argument("task_id")
+    secret_run.add_argument("capability_id")
+
+    egress = sub.add_parser("egress")
+    egress_sub = egress.add_subparsers(dest="egress_command", required=True)
+    egress_build = egress_sub.add_parser("build")
+    egress_build.add_argument("task_id")
+    egress_build.add_argument("--provider", choices=["codex-cloud", "claude-cloud"], required=True)
+    egress_build.add_argument("--selections", type=Path, required=True)
+    egress_approve = egress_sub.add_parser("approve")
+    egress_approve.add_argument("bundle_id")
+    egress_approve.add_argument("--approver", required=True)
+    egress_show = egress_sub.add_parser("show")
+    egress_show.add_argument("bundle_id")
+
+    quality = sub.add_parser("quality")
+    quality_sub = quality.add_subparsers(dest="quality_command", required=True)
+    quality_propose = quality_sub.add_parser("propose")
+    quality_propose.add_argument("system_id")
+    quality_propose.add_argument("--commands", type=Path, required=True)
+    quality_propose.add_argument("--proposer", required=True)
+    quality_approve = quality_sub.add_parser("approve")
+    quality_approve.add_argument("command_set_id")
+    quality_approve.add_argument("--approver", required=True)
+    quality_show = quality_sub.add_parser("show")
+    quality_show.add_argument("command_set_id")
+
+    test = sub.add_parser("test")
+    test.add_argument("task_id")
+    test.add_argument("--scope", choices=["targeted", "full"], default="targeted")
+
+    inspect_egress = sub.add_parser("inspect-egress")
+    inspect_egress.add_argument("bundle_id")
+
+    for name in ("verify", "deploy", "promote"):
         blocked = sub.add_parser(name)
         blocked.add_argument("arguments", nargs="*")
     return parser
@@ -210,7 +296,62 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         return {"emergency_stop": not args.clear}
     if args.command == "audit":
         return {"valid": hub.audit.verify()} if args.audit_command == "verify" else hub.audit.export()
-    if args.command in {"research", "inspect-egress", "test", "verify", "deploy", "promote"}:
+    if args.command == "research":
+        if args.research_command == "propose":
+            return hub.research_policies.propose(args.system_id, args.domain, args.proposer, max_bytes=args.max_bytes, timeout=args.timeout, minimum_interval=args.minimum_interval, searxng=args.searxng)
+        if args.research_command == "approve":
+            return hub.research_policies.approve(args.policy_id, args.approver, enable_live=args.enable_live)
+        if args.research_command == "show":
+            return hub.research_policies.get(args.policy_id)
+        if args.research_command == "fetch":
+            return hub.research.fetch(args.task_id, args.url)
+        if args.research_command == "discover":
+            return hub.research.discover(args.task_id, args.query, args.limit)
+        if args.research_command == "ingest-offline":
+            inbox = (hub.database.layout.root / "research-inbox").resolve()
+            inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+            content_path = args.content.resolve(strict=True)
+            if content_path.is_symlink() or not content_path.is_relative_to(inbox) or not content_path.is_file():
+                raise ValidationError(f"offline research content must be a regular file under {inbox}")
+            content = content_path.read_text(encoding="utf-8")
+            return hub.research.ingest_offline(args.task_id, args.url, content, args.media_type)
+        if args.research_command == "search-cache":
+            return hub.research.search_cache(args.task_id, args.query, args.limit)
+        if args.research_command == "resolve":
+            return hub.research.resolve(args.task_id, args.query, args.official_url)
+        return hub.research.get_evidence(args.task_id, args.evidence_id)
+    if args.command == "secret":
+        if args.secret_command == "propose":
+            capability = json.loads(args.capability.read_text(encoding="utf-8"))
+            return hub.capabilities.propose(args.system_id, capability, args.proposer)
+        if args.secret_command == "approve":
+            return hub.capabilities.approve(args.capability_id, args.approver)
+        if args.secret_command == "show":
+            return hub.capabilities.get(args.capability_id)
+        raise AuthorizationRequired("no real secret backend is configured; synthetic backends are test-only and cannot be supplied through the CLI")
+    if args.command == "egress":
+        if args.egress_command == "build":
+            selections = json.loads(args.selections.read_text(encoding="utf-8"))
+            if not isinstance(selections, list):
+                raise ValidationError("egress selections file must contain a JSON list")
+            return hub.egress.build(args.task_id, args.provider, selections)
+        if args.egress_command == "approve":
+            return hub.egress.approve(args.bundle_id, args.approver)
+        return hub.egress.get(args.bundle_id)
+    if args.command == "inspect-egress":
+        return hub.egress.get(args.bundle_id)
+    if args.command == "quality":
+        if args.quality_command == "propose":
+            commands = json.loads(args.commands.read_text(encoding="utf-8"))
+            if not isinstance(commands, list):
+                raise ValidationError("quality commands file must contain a JSON list")
+            return hub.quality_registry.propose(args.system_id, commands, args.proposer)
+        if args.quality_command == "approve":
+            return hub.quality_registry.approve(args.command_set_id, args.approver)
+        return hub.quality_registry.get(args.command_set_id)
+    if args.command == "test":
+        return hub.run_quality(args.task_id, args.scope)
+    if args.command in {"verify", "deploy", "promote"}:
         raise AuthorizationRequired(f"{args.command} belongs to a later build phase and is not activated; safe resume: implement the next authorized phase from docs/FINAL_BUILD_PLAN.md")
     raise ValidationError("unsupported command")
 

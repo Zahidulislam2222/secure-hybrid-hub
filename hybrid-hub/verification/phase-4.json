@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "Secure Hybrid Hub Phase 4 deterministic quality engine, synthetic-only",
+  "verified_at": "2026-07-16T23:59:00+06:00",
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "cloud_egress_enabled": false,
+  "research_network_enabled": false,
+  "real_credentials_used": false,
+  "real_client_data_used": false,
+  "production_access_used": false,
+  "downloads_or_installations": false,
+  "automated_test_command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
+  "automated_test_count": 47,
+  "automated_test_status": "passed",
+  "validated_areas": [
+    "approved-command-registry", "argv-only-execution", "clean-environment",
+    "bounded-resources", "sanitized-hashed-evidence", "targeted-gates", "full-gates",
+    "single-repo", "monorepo-affected-components", "polyrepo-combined-integration",
+    "broken-logic-detection", "test-deletion-and-assertion-weakening",
+    "secret-canary", "regulated-gate-fail-closed", "contract-compatibility",
+    "destructive-migration", "disposable-snapshot", "landlock-filesystem-denial",
+    "network-namespace-denial", "dossier-checkpoint", "audit-integrity", "CLI-end-to-end"
+  ],
+  "negative_test_expectations": {
+    "broken_logic": "blocked",
+    "removed_assertion": "blocked-before-command-execution",
+    "secret_canary": "blocked-and-redacted-from-evidence",
+    "breaking_contract": "blocked",
+    "destructive_migration": "blocked",
+    "out_of_scope_file_read": "kernel-denied",
+    "external_network_connection": "kernel-denied",
+    "missing_regulated_gate": "blocked"
+  },
+  "production_readiness_claim": false,
+  "reason": "Later security, orchestration, cloud, deployment, operational-hardening, and regulated-pilot phases remain incomplete"
+}

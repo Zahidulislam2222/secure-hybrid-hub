@@ -1,7 +1,7 @@
 # Secure Hybrid AI Development Hub
 
 This workspace contains the research, authoritative build plan, and the verified
-local-only Phase 0–3 implementation slice for a privacy-tiered development system:
+Phase 0–6 implementation for a privacy-tiered development system:
 
 - cloud models perform planning and carefully scoped review;
 - local Ollama models perform high-volume implementation;
@@ -22,12 +22,17 @@ Start here:
 - [Decision log](docs/DECISION_LOG.md)
 - [Implemented hub](hybrid-hub/README.md)
 - [Phase 0–3 verification evidence](hybrid-hub/verification/phase-0-3.json)
+- [Phase 4 verification evidence](hybrid-hub/verification/phase-4.json)
+- [Phase 5 verification evidence](hybrid-hub/verification/phase-5.json)
+- [Phase 6 verification evidence](hybrid-hub/verification/phase-6.json)
 - [Explicit project opt-in](hybrid-hub/docs/OPT_IN_PROJECTS.md)
 
-Status: Phases 0–3 are implemented and verified with synthetic data. Later
-quality, network research, DLP/secret runner, cloud, deployment, and regulated
-pilot phases remain disabled pending their specific authorization. No service,
-container, dependency, or model was installed; no cloud egress was enabled.
+Status: Phases 0–6 are implemented and verified with synthetic data and mocked
+network boundaries. Live research, real secret backends, and cloud transmission
+remain disabled. Later cloud adapters, implementation orchestration,
+deployment, operational hardening, and regulated pilot phases remain disabled
+pending their prerequisites and specific authorization. No service, container,
+dependency, or model was installed; no cloud egress was enabled.
 
 Quick local verification:
 

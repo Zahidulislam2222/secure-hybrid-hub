@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-5",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-5",
+  "state": "completed",
+  "created_at": "2026-07-17T00:20:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "research-policy", "task"],
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "delivered": [
+    "human-proposed and approved exact-domain research policies with a separate live-network flag",
+    "client/system-separated content-addressed evidence cache and local token index",
+    "offline approved evidence ingestion and cache-first/local-only degradation",
+    "isolated direct official-source HTTPS worker with DNS and IP pinning",
+    "HTTPS-only URL, redirect, public-address, MIME, encoding, byte, timeout, and rate controls",
+    "robots.txt enforcement, no cookies, no authentication, no JavaScript, and no compression",
+    "prompt-injection detection and permanent untrusted-content labeling",
+    "Landlock plus PID/IPC/UTS isolation preventing repository, broker, home, SSH, browser, and Docker reads",
+    "optional localhost-only SearXNG discovery interface and non-installed configuration template",
+    "source URL, retrieval time, raw/content hash, size, MIME, redirects, and isolation provenance"
+  ],
+  "evidence": ["tests/test_research.py", "config/research/searxng.example.yml", "verification/phase-5.json"],
+  "unresolved_risks": [
+    "No live external fetch or SearXNG service was enabled or tested because separate network/service authorization was not granted",
+    "Domain owners, terms, robots behavior, cache permissions, and rates require project-specific human review",
+    "Public pages remain untrusted and may contain subtle prompt injection not detected by patterns",
+    "The design provides high practical availability and caching, not literally unlimited third-party search",
+    "DLP, secret capabilities, cloud adapters, and automated recovery integration remain unavailable"
+  ],
+  "next_allowed_phase": "phase-6-synthetic-secret-and-egress-DLP-only; selecting or using a real secret backend requires authorization"
+}

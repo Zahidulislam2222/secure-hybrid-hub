@@ -1,0 +1,24 @@
+use_default_settings: true
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8888
+  secret_key: "LOAD_FROM_APPROVED_OS_SECRET_STORE"
+  limiter: true
+  image_proxy: false
+
+search:
+  safe_search: 1
+  formats:
+    - json
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 15.0
+  pool_connections: 10
+  pool_maxsize: 10
+
+# This is configuration only. Do not install or start SearXNG until a human
+# approves the service, image/version/signature, bind address, engines, terms,
+# rate policy, retention, and update process. The broker must still revalidate
+# every discovered URL before fetching it.

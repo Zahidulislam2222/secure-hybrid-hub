@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-6",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-6",
+  "state": "completed",
+  "created_at": "2026-07-17T00:45:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "secret-capability", "egress-selection", "task"],
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "delivered": [
+    "pluggable secret-backend interface with synthetic-memory backend as the only authorized implementation",
+    "human-proposed and approved named capability registry with immutable argv, bindings, environment, network, and resource limits",
+    "repository-free Landlock and namespace-confined secret runner",
+    "exact, Base64, URL, JSON, and hex secret redaction with independent absence verification",
+    "bounded sanitized secret-run evidence with no raw value in audit or SQLite",
+    "explicit-file-only UTF-8 egress builder with path, symlink, type, binary, byte, and Unicode controls",
+    "secret, credential, connection-string, PHI, PII, and privileged-material DLP gates",
+    "content-hashed sealed bundle manifest and human approval with tamper revalidation",
+    "managed-global cloud transmission deny separated from offline profile-eligible bundle preparation",
+    "CLI capability configuration and non-transmitting egress inspection surfaces"
+  ],
+  "evidence": ["tests/test_security_phase6.py", "verification/phase-6.json"],
+  "unresolved_risks": [
+    "No OS credential store, organizational vault, real credential, or live secret destination is selected or authorized",
+    "Generic DLP patterns cannot guarantee detection of every regulated, privileged, or secret value",
+    "CLI approver labels are not cryptographic identities",
+    "Egress bundles remain non-transmittable until an approved Phase 7 provider identity and managed policy are configured",
+    "Cloud adapters, orchestration, deployment, operational hardening, and regulated pilot remain incomplete"
+  ],
+  "next_allowed_phase": "phase-7-disabled-provider-adapter-code-and-mocked-tests; live provider use requires explicit authorization"
+}

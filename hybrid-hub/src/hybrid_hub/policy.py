@@ -8,8 +8,10 @@ from .util import sha256_json
 
 RANK = {f"R{i}": i for i in range(5)}
 
+MANAGED_GLOBAL = {"classification": "R0", "cloud_code_egress": False, "internet_with_repo": False, "model_secret_access": False, "production_model_access": False, "retention_days": 36500, "gates": set()}
+
 PROFILES: dict[str, dict[str, Any]] = {
-    "regulated": {"classification": "R1", "cloud_code_egress": False, "internet_with_repo": False, "model_secret_access": False, "production_model_access": False, "retention_days": 30, "gates": {"parse", "unit", "secret-scan", "test-integrity"}},
+    "regulated": {"classification": "R1", "cloud_code_egress": True, "internet_with_repo": False, "model_secret_access": False, "production_model_access": False, "retention_days": 30, "gates": {"parse", "unit", "secret-scan", "test-integrity"}},
     "standard": {"classification": "R1", "cloud_code_egress": True, "internet_with_repo": False, "model_secret_access": False, "production_model_access": False, "retention_days": 90, "gates": {"parse", "unit", "secret-scan"}},
     "confidential": {"classification": "R1", "cloud_code_egress": False, "internet_with_repo": False, "model_secret_access": False, "production_model_access": False, "retention_days": 14, "gates": {"selected-source-only", "human-egress-approval"}},
     "healthcare": {"classification": "R2", "cloud_code_egress": False, "internet_with_repo": False, "model_secret_access": False, "production_model_access": False, "retention_days": 14, "gates": {"phi-scan", "audit-completeness", "privacy-retention"}},
@@ -48,13 +50,13 @@ class EffectivePolicy:
         }
 
 
-def compose(profiles: list[str], layers: list[dict[str, Any]] | None = None) -> EffectivePolicy:
+def compose(profiles: list[str], layers: list[dict[str, Any]] | None = None, *, managed: dict[str, Any] | None = None) -> EffectivePolicy:
     ordered = ["regulated", *profiles]
     ordered = list(dict.fromkeys(ordered))
     unknown = [name for name in ordered if name not in PROFILES]
     if unknown:
         raise ValidationError(f"unknown profiles: {unknown}")
-    rules = [PROFILES[name] for name in ordered]
+    rules = [managed or MANAGED_GLOBAL, *[PROFILES[name] for name in ordered]]
     if layers:
         rules.extend(layers)
     classification = max((rule.get("classification", "R0") for rule in rules), key=RANK.__getitem__)

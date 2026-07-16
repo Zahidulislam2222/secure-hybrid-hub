@@ -11,7 +11,7 @@ from .errors import AuthorizationRequired, PolicyDenied, ValidationError
 from .storage import Database
 from .util import canonical_json, sha256_json, utc_now
 
-PROTECTED_AREAS = {"architecture", "data_flows", "security", "compliance", "cloud_scope", "environments", "owners", "deployment", "exceptions"}
+PROTECTED_AREAS = {"architecture", "data_flows", "security", "compliance", "cloud_scope", "environments", "owners", "deployment", "exceptions", "approved_commands"}
 MECHANICAL_AREAS = {"verified_commits", "test_evidence", "artifact_ids", "dependency_versions"}
 FORBIDDEN_KEYS = re.compile(r"(?i)^(secret|secrets|secret_value|password|credential|credentials|token|api.?key|patient_record|customer_record|privileged_communication|raw_log|database_dump)$")
 FORBIDDEN_CONTENT = [*SECRET_PATTERNS, re.compile(r"(?i)SYNTHETIC PHI|SYNTHETIC PII|PRIVILEGED LEGAL COMMUNICATION")]

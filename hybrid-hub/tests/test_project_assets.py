@@ -12,13 +12,22 @@ SKILLS = {"hybrid-init", "hybrid-run", "hybrid-status", "hybrid-resume", "hybrid
 class ProjectAssetTests(unittest.TestCase):
     def test_every_phase_has_a_valid_dossier_checkpoint(self):
         dossier = json.loads((ROOT / "dossier" / "development.json").read_text())
-        self.assertEqual(len(dossier["phase_checkpoints"]), 4)
+        self.assertEqual(len(dossier["phase_checkpoints"]), 7)
         for index, relative in enumerate(dossier["phase_checkpoints"]):
             checkpoint = json.loads((ROOT / "dossier" / relative).read_text())
             self.assertEqual(checkpoint["phase"], f"phase-{index}")
             self.assertEqual(checkpoint["state"], "completed")
             self.assertEqual(len(checkpoint["effective_policy_hash"]), 64)
             self.assertNotIn("pending", checkpoint["effective_policy_hash"])
+        evidence = json.loads((ROOT / "verification" / "phase-4.json").read_text())
+        self.assertEqual(evidence["automated_test_status"], "passed")
+        self.assertFalse(evidence["production_readiness_claim"])
+        research = json.loads((ROOT / "verification" / "phase-5.json").read_text())
+        self.assertEqual(research["live_network_calls"], 0)
+        self.assertFalse(research["searxng_installed_or_started"])
+        dlp = json.loads((ROOT / "verification" / "phase-6.json").read_text())
+        self.assertFalse(dlp["synthetic_canary_exposure"])
+        self.assertEqual(dlp["bundle_transmission_attempts"], 0)
 
     def test_project_local_surfaces_are_present_and_promotion_is_explicit(self):
         codex = {path.parent.name for path in (WORKSPACE / ".agents" / "skills").glob("*/SKILL.md")}

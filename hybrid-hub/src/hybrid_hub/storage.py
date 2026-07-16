@@ -76,6 +76,46 @@ CREATE TABLE IF NOT EXISTS artifacts(
   digest TEXT PRIMARY KEY, media_type TEXT NOT NULL, size INTEGER NOT NULL,
   relative_path TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS quality_command_sets(
+  command_set_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  status TEXT NOT NULL, commands_json TEXT NOT NULL, command_set_hash TEXT NOT NULL,
+  proposed_by TEXT NOT NULL, approved_by TEXT, created_at TEXT NOT NULL,
+  approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS quality_runs(
+  run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  scope TEXT NOT NULL, passed INTEGER NOT NULL, summary_json TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS research_policy_versions(
+  policy_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  status TEXT NOT NULL, policy_json TEXT NOT NULL, policy_hash TEXT NOT NULL,
+  proposed_by TEXT NOT NULL, approved_by TEXT, live_enabled INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS research_evidence(
+  evidence_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  task_id TEXT NOT NULL REFERENCES tasks(task_id), source_url TEXT NOT NULL,
+  retrieved_at TEXT NOT NULL, content_hash TEXT NOT NULL, artifact_digest TEXT NOT NULL,
+  size INTEGER NOT NULL, media_type TEXT NOT NULL, metadata_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS research_index(
+  system_id TEXT NOT NULL, token TEXT NOT NULL, evidence_id TEXT NOT NULL REFERENCES research_evidence(evidence_id),
+  PRIMARY KEY(system_id, token, evidence_id)
+);
+CREATE TABLE IF NOT EXISTS secret_capabilities(
+  capability_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  status TEXT NOT NULL, capability_json TEXT NOT NULL, capability_hash TEXT NOT NULL,
+  proposed_by TEXT NOT NULL, approved_by TEXT, created_at TEXT NOT NULL, approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS egress_bundles(
+  bundle_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  system_id TEXT NOT NULL REFERENCES systems(system_id), provider TEXT NOT NULL,
+  status TEXT NOT NULL, manifest_json TEXT NOT NULL, bundle_hash TEXT NOT NULL,
+  relative_path TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT,
+  approved_at TEXT
+);
 """
 
 

@@ -1,5 +1,7 @@
 # Broker runtime and generated evidence
 hybrid-hub/runtime/
+e2e-runtime/
+e2e-projects/
 **/runtime/hub.sqlite3*
 **/runtime/workspaces/
 **/runtime/egress/
