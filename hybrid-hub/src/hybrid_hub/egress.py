@@ -20,7 +20,7 @@ BIDI = re.compile("[\u202a-\u202e\u2066-\u2069]")
 DLP_PATTERNS = [
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     ("connection-string", re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s]+")),
-    ("credential", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)[ \t]*[:=][ \t]*['\"]?[^\s,'\";]{8,}")),
+    ("credential", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)[ \t]*[:=][ \t]*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|['\"]?(?:placeholder|redacted|test[-_])))['\"]?[^\s,'\";]{8,}")),
     ("phi", re.compile(r"(?i)\b(?:patient|medical record|diagnosis)\b.{0,60}\b(?:name|dob|mrn|address|email|phone)\b")),
     ("pii", re.compile(r"(?i)\b(?:ssn|social security|passport|national id)\b\s*[:=]?\s*[A-Z0-9-]{5,}")),
     ("privileged", re.compile(r"(?i)\b(?:attorney[- ]client privileged|privileged legal communication|work product)\b")),

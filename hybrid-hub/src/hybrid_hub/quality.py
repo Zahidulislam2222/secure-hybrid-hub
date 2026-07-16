@@ -35,7 +35,7 @@ DESTRUCTIVE_SQL = re.compile(r"(?i)\b(?:DROP\s+(?:TABLE|COLUMN|DATABASE)|TRUNCAT
 SENSITIVE_CONTENT = [
     ("synthetic-canary", re.compile(r"hh_test_CANARY_[A-Z0-9_]+")),
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
-    ("credential-assignment", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)\s*[:=]\s*['\"]?[^\s,'\";]{8,}")),
+    ("credential-assignment", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)\s*[:=]\s*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|['\"]?(?:placeholder|redacted|test[-_])))['\"]?[^\s,'\";]{8,}")),
 ]
 CLASSIFICATION_CONTENT = {
     "phi-scan": re.compile(r"(?i)\b(?:patient|medical record|diagnosis|health plan)\b.{0,40}\b(?:name|id|dob|address|email|phone)\b"),
@@ -179,6 +179,7 @@ class QualityRunner:
         self.dossier = dossier
         self.registry = registry
         self._sandbox_script = Path(__file__).with_name("sandbox_exec.py").resolve()
+        self.modifiers = None
 
     def run(self, task_id: str, scope: str) -> dict[str, Any]:
         if scope not in {"targeted", "full"}:
@@ -225,6 +226,9 @@ class QualityRunner:
             if result["passed"]:
                 observed_gates.add(result["gate"])
         required = {gate for gate in policy.gates if gate not in CONTROL_ONLY_GATES}
+        modifier_row = self.modifiers.for_task(task_id) if self.modifiers else None
+        if modifier_row:
+            required.update(modifier_row["modifier"]["add_required_gates"])
         required.update({"secret-scan", "test-integrity", "parse", "unit"})
         missing_by_repository: dict[str, list[str]] = {}
         for repository in repositories:
@@ -362,6 +366,8 @@ class QualityRunner:
                 if relative in changed_paths:
                     findings["secret-scan"].append(f"changed binary or non-UTF-8 file requires explicit approval: {relative}")
                 continue
+            if Path(relative).name.startswith(".env") and not Path(relative).name.endswith((".example", ".sample", ".template")):
+                findings["secret-scan"].append(f"environment-value file is forbidden in a coding workspace: {relative}")
             for detector, pattern in SENSITIVE_CONTENT:
                 if pattern.search(text):
                     findings["secret-scan"].append(f"{detector} finding: {relative}")

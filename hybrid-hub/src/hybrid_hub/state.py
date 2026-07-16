@@ -17,18 +17,31 @@ TRANSITIONS = {
     "SCOPED": {"PLAN_BUNDLE_READY", "PLANNED", "WORKSPACES_READY", "CANCELLED"},
     "PLAN_BUNDLE_READY": {"PLANNED", "PAUSED_APPROVAL", "BLOCKED_POLICY", "CANCELLED"},
     "PLANNED": {"WORKSPACES_READY", "CANCELLED"},
-    "WORKSPACES_READY": {"LOCAL_IMPLEMENTING", "PAUSED_APPROVAL", "CANCELLED"},
-    "LOCAL_IMPLEMENTING": {"TARGETED_TESTING", "LOCAL_REPAIRING", "BLOCKED_QUALITY", "FAILED_INFRA", "CANCELLED"},
-    "TARGETED_TESTING": {"LOCAL_REPAIRING", "FULL_QUALITY_GATES", "BLOCKED_QUALITY", "CANCELLED"},
-    "LOCAL_REPAIRING": {"TARGETED_TESTING", "BLOCKED_QUALITY", "CANCELLED"},
-    "FULL_QUALITY_GATES": {"REVIEW_BUNDLE_READY", "RELEASE_EVIDENCE_READY", "BLOCKED_QUALITY", "CANCELLED"},
+    "WORKSPACES_READY": {"LOCAL_IMPLEMENTING", "PAUSED_INPUT", "PAUSED_AUTH", "PAUSED_APPROVAL", "FAILED_INFRA", "CANCELLED"},
+    "LOCAL_IMPLEMENTING": {"TARGETED_TESTING", "LOCAL_REPAIRING", "PAUSED_INPUT", "PAUSED_AUTH", "PAUSED_APPROVAL", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED"},
+    "TARGETED_TESTING": {"LOCAL_REPAIRING", "FULL_QUALITY_GATES", "PAUSED_INPUT", "BLOCKED_QUALITY", "FAILED_INFRA", "CANCELLED"},
+    "LOCAL_REPAIRING": {"TARGETED_TESTING", "PAUSED_INPUT", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED"},
+    "FULL_QUALITY_GATES": {"LOCAL_REPAIRING", "REVIEW_BUNDLE_READY", "RELEASE_EVIDENCE_READY", "BLOCKED_QUALITY", "FAILED_INFRA", "CANCELLED"},
     "REVIEW_BUNDLE_READY": {"CLOUD_REVIEWED", "PAUSED_APPROVAL", "BLOCKED_POLICY", "CANCELLED"},
     "CLOUD_REVIEWED": {"LOCAL_FIXING", "RELEASE_EVIDENCE_READY", "BLOCKED_QUALITY", "CANCELLED"},
     "LOCAL_FIXING": {"FULL_QUALITY_GATES", "BLOCKED_QUALITY", "CANCELLED"},
     "RELEASE_EVIDENCE_READY": {"VERIFIED", "BLOCKED_QUALITY", "CANCELLED"},
     "PAUSED_INPUT": set(), "PAUSED_AUTH": set(), "PAUSED_APPROVAL": set(),
     "BLOCKED_QUALITY": set(), "BLOCKED_POLICY": set(), "FAILED_INFRA": set(),
-    "VERIFIED": set(), "CANCELLED": set(),
+    "VERIFIED": {"STAGING_DEPLOYED", "CANCELLED"},
+    "STAGING_DEPLOYED": {"STAGING_VERIFIED", "FAILED_INFRA", "CANCELLED"},
+    "STAGING_VERIFIED": {"PRODUCTION_APPROVAL", "CANCELLED"},
+    "PRODUCTION_APPROVAL": {"PRODUCTION_CANARY", "PAUSED_APPROVAL", "CANCELLED"},
+    "PRODUCTION_CANARY": {"PRODUCTION_VERIFIED", "FAILED_INFRA", "CANCELLED"},
+    "PRODUCTION_VERIFIED": {"HUMAN_ACCEPTED", "CANCELLED"},
+    "HUMAN_ACCEPTED": set(), "CANCELLED": set(),
+}
+
+RESUME_TARGETS = {
+    "PAUSED_INPUT": {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING"},
+    "PAUSED_AUTH": {"WORKSPACES_READY", "REVIEW_BUNDLE_READY"},
+    "PAUSED_APPROVAL": {"PLAN_BUNDLE_READY", "WORKSPACES_READY", "REVIEW_BUNDLE_READY"},
+    "FAILED_INFRA": {"WORKSPACES_READY", "TARGETED_TESTING", "FULL_QUALITY_GATES"},
 }
 
 
@@ -71,7 +84,9 @@ class TaskManager:
             if fail_checkpoint:
                 raise OSError("simulated checkpoint failure")
             payload = {"actor": "broker", "from": current, "to": target, "policy_hash": row["policy_hash"], "classification": row["classification"], "evidence": evidence or [], "unresolved_risks": [reason] if reason else []}
-            self.dossier.checkpoint(row["system_id"], target.lower(), target, payload, task_id=task_id, connection=connection)
+            occurrence = connection.execute("SELECT COUNT(*) FROM checkpoints WHERE task_id=? AND state=?", (task_id, target)).fetchone()[0]
+            phase = target.lower() if occurrence == 0 else f"{target.lower()}-{occurrence + 1}"
+            self.dossier.checkpoint(row["system_id"], phase, target, payload, task_id=task_id, connection=connection)
             now = utc_now()
             connection.execute("UPDATE tasks SET state=?,reason=?,cancelled=?,updated_at=? WHERE task_id=?", (target, reason, int(target == "CANCELLED"), now, task_id))
             self.audit.append("task.transition", {"from": current, "to": target, "reason": reason, "evidence": evidence or []}, system_id=row["system_id"], task_id=task_id, connection=connection)
@@ -84,10 +99,12 @@ class TaskManager:
                 raise ConflictError("task is not resumable")
             if not row["system_approved"]:
                 raise PolicyDenied("system is disabled")
-            if target not in TRANSITIONS:
-                raise ValidationError("invalid resume target")
+            if target not in RESUME_TARGETS[row["state"]]:
+                raise PolicyDenied("resume target is not allowed from this paused state")
             payload = {"actor": "broker", "from": row["state"], "to": target, "policy_hash": row["policy_hash"], "classification": row["classification"], "evidence": []}
-            self.dossier.checkpoint(row["system_id"], f"resume-{target.lower()}", target, payload, task_id=task_id, connection=connection)
+            occurrence = connection.execute("SELECT COUNT(*) FROM checkpoints WHERE task_id=? AND phase LIKE ?", (task_id, f"resume-{target.lower()}%")).fetchone()[0]
+            phase = f"resume-{target.lower()}" if occurrence == 0 else f"resume-{target.lower()}-{occurrence + 1}"
+            self.dossier.checkpoint(row["system_id"], phase, target, payload, task_id=task_id, connection=connection)
             connection.execute("UPDATE tasks SET state=?,reason=NULL,updated_at=? WHERE task_id=?", (target, utc_now(), task_id))
             self.audit.append("task.resumed", {"from": row["state"], "to": target}, system_id=row["system_id"], task_id=task_id, connection=connection)
         return self.get(task_id)

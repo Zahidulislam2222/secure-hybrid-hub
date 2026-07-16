@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .errors import AuthorizationRequired, HubError, ValidationError
+from .errors import AuthorizationRequired, HubError, PolicyDenied, ValidationError
 from .hub import Hub
 from .policy import RANK, compose
 from .topology import Topology
@@ -74,7 +74,14 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--task-id")
     run.add_argument("--create-workspaces", action="store_true")
     run.add_argument("--repo", action="append", default=[])
-    run.add_argument("--through", choices=["scoped", "local-ready"], default="local-ready")
+    run.add_argument("--through", choices=["scoped", "local-ready", "verified"], default="local-ready")
+    run.add_argument("--adapter", choices=["codex-local", "claude-local"], default="codex-local")
+    run.add_argument("--endpoint", default="http://127.0.0.1:11434")
+    run.add_argument("--model")
+    run.add_argument("--timeout", type=int, default=300)
+    run.add_argument("--executable", help="absolute local ollama/ollama.exe path")
+    run.add_argument("--max-repairs", type=int, default=3)
+    run.add_argument("--modifier", help="approved per-project modifier ID")
 
     status = sub.add_parser("status")
     status.add_argument("task_id")
@@ -202,9 +209,74 @@ def _parser() -> argparse.ArgumentParser:
     inspect_egress = sub.add_parser("inspect-egress")
     inspect_egress.add_argument("bundle_id")
 
-    for name in ("verify", "deploy", "promote"):
-        blocked = sub.add_parser(name)
-        blocked.add_argument("arguments", nargs="*")
+    provider = sub.add_parser("provider")
+    provider_sub = provider.add_subparsers(dest="provider_command", required=True)
+    provider_propose = provider_sub.add_parser("propose")
+    provider_propose.add_argument("system_id")
+    provider_propose.add_argument("--profile", type=Path, required=True)
+    provider_propose.add_argument("--proposer", required=True)
+    provider_approve = provider_sub.add_parser("approve")
+    provider_approve.add_argument("profile_id")
+    provider_approve.add_argument("--approver", required=True)
+    provider_approve.add_argument("--enable-live", action="store_true")
+    provider_show = provider_sub.add_parser("show")
+    provider_show.add_argument("profile_id")
+
+    cloud = sub.add_parser("cloud")
+    cloud_sub = cloud.add_subparsers(dest="cloud_command", required=True)
+    cloud_preflight = cloud_sub.add_parser("preflight")
+    cloud_preflight.add_argument("bundle_id")
+
+    verify = sub.add_parser("verify")
+    verify.add_argument("task_id")
+
+    deploy = sub.add_parser("deploy")
+    deploy.add_argument("task_id")
+    deploy.add_argument("--to", choices=["staging"], required=True)
+    deploy.add_argument("--adapter", required=True)
+
+    promote = sub.add_parser("promote")
+    promote.add_argument("task_id")
+    promote.add_argument("--approval")
+    promote.add_argument("--approver")
+    promote.add_argument("--adapter")
+
+    operations = sub.add_parser("operations")
+    operations_sub = operations.add_subparsers(dest="operations_command", required=True)
+    operations_sub.add_parser("access-review")
+    operations_sub.add_parser("security-evaluation")
+    operations_sub.add_parser("backup")
+    verify_backup = operations_sub.add_parser("verify-backup")
+    verify_backup.add_argument("backup_id")
+    restore_backup = operations_sub.add_parser("restore-backup")
+    restore_backup.add_argument("backup_id")
+    restore_backup.add_argument("--destination", type=Path, required=True)
+    sbom = operations_sub.add_parser("sbom")
+    sbom.add_argument("--source", type=Path, required=True)
+    retention = operations_sub.add_parser("retention")
+    retention.add_argument("--days", type=int, required=True)
+    retention.add_argument("--execute", action="store_true")
+    operations_sub.add_parser("expire-exceptions")
+
+    integrations = sub.add_parser("integrations")
+    integrations_sub = integrations.add_subparsers(dest="integrations_command", required=True)
+    integrations_install = integrations_sub.add_parser("install")
+    integrations_install.add_argument("--system", required=True)
+    integrations_install.add_argument("--project", type=Path, required=True)
+
+    modifier = sub.add_parser("modifier")
+    modifier_sub = modifier.add_subparsers(dest="modifier_command", required=True)
+    modifier_propose = modifier_sub.add_parser("propose")
+    modifier_propose.add_argument("system_id")
+    modifier_propose.add_argument("--file", type=Path, required=True)
+    modifier_propose.add_argument("--proposer", required=True)
+    modifier_approve = modifier_sub.add_parser("approve")
+    modifier_approve.add_argument("modifier_id")
+    modifier_approve.add_argument("--approver", required=True)
+    modifier_show = modifier_sub.add_parser("show")
+    modifier_show.add_argument("modifier_id")
+    modifier_list = modifier_sub.add_parser("list")
+    modifier_list.add_argument("system_id")
     return parser
 
 
@@ -263,20 +335,45 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         system = hub.registry.get_system(args.system)
         policy = compose(system["profiles"])
         classification = max((args.classification, system["classification"]), key=RANK.__getitem__)
+        modifier_row = None
+        if args.modifier:
+            modifier_row = hub.modifiers.get(args.modifier)
+            if modifier_row["system_id"] != args.system or modifier_row["status"] != "approved":
+                raise PolicyDenied("selected modifier is not approved for this system")
+            classification = max((classification, modifier_row["modifier"]["classification_floor"]), key=RANK.__getitem__)
+        worker = None
+        if args.through == "verified":
+            if not args.model:
+                raise AuthorizationRequired("verified orchestration requires an explicitly selected installed local model")
+            if modifier_row and args.model not in modifier_row["modifier"]["allowed_local_models"]:
+                raise PolicyDenied("selected local model is not allowed by the project modifier")
+            config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable)
+            worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
+            worker.preflight()
         task = hub.tasks.create(args.system, args.request, classification, policy.policy_hash, args.task_id)
+        if modifier_row:
+            hub.modifiers.bind(task["task_id"], args.modifier)
         for target in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED"):
             task = hub.tasks.transition(task["task_id"], target)
         if args.through == "scoped":
             return task
+        plan = hub.orchestrator.plan(task["task_id"]) if args.through == "verified" else None
         workspace = None
-        if args.create_workspaces:
-            workspace = hub.workspaces.create(task["task_id"], args.repo)
+        if args.create_workspaces or args.through == "verified":
+            repo_ids = args.repo
+            if not repo_ids:
+                repo_ids = [item["repo_id"] for item in hub.registry.discover(args.system)["repositories"]]
+            workspace = hub.workspaces.create(task["task_id"], repo_ids)
         task = hub.tasks.transition(task["task_id"], "WORKSPACES_READY", evidence=[workspace["manifest_hash"]] if workspace else ["local-only-dry-run"])
-        return {"task": task, "workspace": workspace, "authorized_scope": "phases-0-through-3", "next": "local worker preflight or later phase authorization"}
+        if args.through == "verified":
+            def driver(task_id, prompt, attempt, role):
+                return worker.run_structured(task_id, prompt)["result"]
+            return hub.orchestrator.complete(task["task_id"], driver, adapter=args.adapter, max_repairs=args.max_repairs)
+        return {"task": task, "workspace": workspace, "authorized_scope": "local-ready", "next": "run --through verified with an explicitly selected installed model, or inspect status"}
     if args.command == "status":
-        return hub.tasks.get(args.task_id)
+        return hub.status(args.task_id)
     if args.command == "cancel":
-        return hub.tasks.cancel(args.task_id)
+        return hub.cancel_task(args.task_id)
     if args.command == "resume":
         return hub.tasks.resume(args.task_id, args.to)
     if args.command == "local":
@@ -340,6 +437,14 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         return hub.egress.get(args.bundle_id)
     if args.command == "inspect-egress":
         return hub.egress.get(args.bundle_id)
+    if args.command == "provider":
+        if args.provider_command == "propose":
+            return hub.provider_profiles.propose(args.system_id, json.loads(args.profile.read_text(encoding="utf-8")), args.proposer)
+        if args.provider_command == "approve":
+            return hub.provider_profiles.approve(args.profile_id, args.approver, enable_live=args.enable_live)
+        return hub.provider_profiles.get(args.profile_id)
+    if args.command == "cloud":
+        return hub.cloud.preflight(args.bundle_id)
     if args.command == "quality":
         if args.quality_command == "propose":
             commands = json.loads(args.commands.read_text(encoding="utf-8"))
@@ -351,8 +456,40 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         return hub.quality_registry.get(args.command_set_id)
     if args.command == "test":
         return hub.run_quality(args.task_id, args.scope)
-    if args.command in {"verify", "deploy", "promote"}:
-        raise AuthorizationRequired(f"{args.command} belongs to a later build phase and is not activated; safe resume: implement the next authorized phase from docs/FINAL_BUILD_PLAN.md")
+    if args.command == "verify":
+        return hub.orchestrator.final_report(args.task_id)
+    if args.command == "deploy":
+        raise AuthorizationRequired("deployment interface is active but no approved project-local CI/CD transport is configured")
+    if args.command == "promote":
+        if args.approver and not args.approval:
+            return hub.deployments.approve_production(args.task_id, args.approver)
+        raise AuthorizationRequired("production promotion requires a valid single-use approval and an approved project-local CI/CD transport")
+    if args.command == "operations":
+        if args.operations_command == "access-review":
+            return hub.operations.access_review()
+        if args.operations_command == "security-evaluation":
+            return hub.operations.security_evaluation()
+        if args.operations_command == "backup":
+            return hub.operations.backup()
+        if args.operations_command == "verify-backup":
+            return hub.operations.verify_backup(args.backup_id)
+        if args.operations_command == "restore-backup":
+            return hub.operations.restore_backup(args.backup_id, args.destination)
+        if args.operations_command == "sbom":
+            return hub.operations.sbom(args.source)
+        if args.operations_command == "retention":
+            return hub.operations.retention(args.days, execute=args.execute)
+        return hub.operations.expire_exceptions()
+    if args.command == "integrations":
+        return hub.integrations.install(args.system, args.project, Path(__file__).resolve().parents[2] / "hub.py", args.runtime)
+    if args.command == "modifier":
+        if args.modifier_command == "propose":
+            return hub.modifiers.propose(args.system_id, json.loads(args.file.read_text(encoding="utf-8")), args.proposer)
+        if args.modifier_command == "approve":
+            return hub.modifiers.approve(args.modifier_id, args.approver)
+        if args.modifier_command == "list":
+            return hub.modifiers.list(args.system_id)
+        return hub.modifiers.get(args.modifier_id)
     raise ValidationError("unsupported command")
 
 

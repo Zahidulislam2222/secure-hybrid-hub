@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "Phase 11 synthetic operational hardening and pilot-readiness",
+  "verified_at": "2026-07-17T02:40:00+06:00",
+  "automated_test_command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
+  "automated_test_count": 91,
+  "automated_test_status": "passed",
+  "validated_areas": ["offline-sbom-inventory", "licence-review-status", "retention-preview", "protected-evidence-retention", "backup-integrity", "restore-to-empty-root", "sqlite-integrity", "access-review", "exception-expiry", "security-evaluation", "incident-runbook", "synthetic-pilot"],
+  "real_client_pilot_performed": false,
+  "real_client_data_used": false,
+  "downloads_or_installations": false,
+  "production_readiness_claim": false,
+  "remaining_authorization": "A real low-risk client pilot, real provider/credential/CI routes, authenticated approvals, and dedicated OS runtime require separate authorization and responsible-human acceptance."
+}

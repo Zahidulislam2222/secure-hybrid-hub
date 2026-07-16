@@ -3,6 +3,10 @@ name: hybrid-run
 description: Submit and follow build, edit, debug, and verification tasks through the Secure Hybrid AI Development Hub.
 ---
 
-Call `python3 hybrid-hub/hub.py run` with `$ARGUMENTS`, the registered system,
-and explicit runtime. Render the exact broker state. Do not bypass the broker,
-broaden authority, expose sensitive context, or report blocked work as complete.
+Read only the project-local `.hybrid-hub.json` marker, then call its exact Hub
+entry/runtime with `run`, `$ARGUMENTS`, the registered system, `--through
+verified`, an explicitly selected installed model, and `claude-local`. If the
+marker is absent, stop; never use or install global configuration. Render the
+verification report and exact state. Do not bypass the broker, broaden
+authority, expose sensitive context, edit outside its worktree, or report a
+pause/block as complete.

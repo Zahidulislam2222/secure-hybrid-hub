@@ -137,6 +137,7 @@ class ResearchManager:
         self.policies = policies
         self._sandbox = Path(__file__).with_name("sandbox_exec.py").resolve()
         self._worker = Path(__file__).with_name("research_worker.py").resolve()
+        self.modifiers = None
 
     def ingest_offline(self, task_id: str, source_url: str, content: str, media_type: str = "text/plain", retrieved_at: str | None = None) -> dict[str, Any]:
         task = self._task(task_id)
@@ -146,6 +147,11 @@ class ResearchManager:
         return self._store(task, url, content, media_type, retrieved_at or utc_now(), {"transport": "offline-approved-ingest", "redirects": [], "robots_checked": False})
 
     def fetch(self, task_id: str, source_url: str) -> dict[str, Any]:
+        if self.modifiers:
+            self.modifiers.require_action(task_id, "live-research")
+            modifier = self.modifiers.for_task(task_id)
+            if modifier and modifier["modifier"]["research_mode"] == "cache-only":
+                raise PolicyDenied("project modifier restricts research to cache-only")
         task = self._task(task_id)
         policy = self.policies.active(task["system_id"], require_live=True)
         settings = policy["policy"]
@@ -161,6 +167,11 @@ class ResearchManager:
         return evidence
 
     def discover(self, task_id: str, query: str, limit: int = 10) -> dict[str, Any]:
+        if self.modifiers:
+            self.modifiers.require_action(task_id, "live-research")
+            modifier = self.modifiers.for_task(task_id)
+            if modifier and modifier["modifier"]["research_mode"] == "cache-only":
+                raise PolicyDenied("project modifier restricts research to cache-only")
         task = self._task(task_id)
         self._validate_query(query)
         if not 1 <= limit <= 20:
@@ -177,6 +188,10 @@ class ResearchManager:
         cached = self.search_cache(task_id, query, 10)
         if cached["results"]:
             return {"task_id": task_id, "mode": "cache", "evidence": cached["results"], "degraded_reasons": [], "network_used": False}
+        if self.modifiers:
+            modifier = self.modifiers.for_task(task_id)
+            if modifier and (modifier["modifier"]["research_mode"] == "cache-only" or "live-research" in modifier["modifier"]["deny_actions"]):
+                return {"task_id": task_id, "mode": "local-only", "evidence": [], "degraded_reasons": ["project modifier restricts research to cache-only"], "network_used": False}
         task = self._task(task_id)
         try:
             policy = self.policies.active(task["system_id"], require_live=True)

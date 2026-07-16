@@ -1,0 +1,16 @@
+{
+  "name": "standard-local",
+  "description": "Local implementation with approved optional review and no production promotion.",
+  "classification_floor": "R1",
+  "preferred_local_adapter": "codex-local",
+  "allowed_local_models": ["qwen3:1.7b"],
+  "max_repairs": 3,
+  "context_bytes": 24576,
+  "add_required_gates": [],
+  "research_mode": "official-if-approved",
+  "cloud_review": "if-approved",
+  "deployment_posture": "staging",
+  "deny_actions": ["production"],
+  "component_ids": [],
+  "path_prefixes": []
+}

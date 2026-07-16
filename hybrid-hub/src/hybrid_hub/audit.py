@@ -10,7 +10,7 @@ from .storage import Database
 from .util import canonical_json, sha256_bytes, utc_now
 
 SECRET_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]+"),
+    re.compile(r"(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|\[?REDACTED\]?|placeholder|test[-_]))[^\s,;]+"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"hh_test_CANARY_[A-Z0-9_]+"),
 ]

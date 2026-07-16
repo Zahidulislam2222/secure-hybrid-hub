@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-9",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-9",
+  "state": "completed",
+  "created_at": "2026-07-17T02:20:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "approved-project-modifier", "task"],
+  "effective_policy_hash": "c29a5fdd4a66cbd411ae7429c10a02e1e70fb1cbf0336eb5a383b9dbb98b33ef",
+  "delivered": ["explicit registered-root integration installer", "project-local Codex and Claude skills", "merged VS Code tasks", "canonical CLI", "no global configuration", "no extra AGENTS.md or CLAUDE.md", "versioned human-approved per-project modifiers", "immutable modifier task snapshots"],
+  "evidence": ["tests/test_release_phases.py", "verification/phase-9.json", "docs/PROJECT_MODIFIERS.md"],
+  "unresolved_risks": ["Interactive tools must honor the project-local marker and broker output", "Approver labels remain unauthenticated strings"],
+  "next_allowed_phase": "phase-10-controlled-deployment-adapters"
+}

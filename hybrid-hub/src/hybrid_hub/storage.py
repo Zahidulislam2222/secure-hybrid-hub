@@ -20,11 +20,13 @@ class RuntimeLayout:
         self.egress = self.root / "egress"
         self.cache = self.root / "cache"
         self.locks = self.root / "locks"
+        self.operations = self.root / "operations"
+        self.backups = self.root / "backups"
 
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
-        for path in (self.artifacts, self.workspaces, self.evidence, self.egress, self.cache, self.locks):
+        for path in (self.artifacts, self.workspaces, self.evidence, self.egress, self.cache, self.locks, self.operations, self.backups):
             path.mkdir(exist_ok=True, mode=0o700)
             os.chmod(path, 0o700)
 
@@ -115,6 +117,61 @@ CREATE TABLE IF NOT EXISTS egress_bundles(
   status TEXT NOT NULL, manifest_json TEXT NOT NULL, bundle_hash TEXT NOT NULL,
   relative_path TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT,
   approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS provider_profiles(
+  profile_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  provider TEXT NOT NULL, status TEXT NOT NULL, profile_json TEXT NOT NULL,
+  profile_hash TEXT NOT NULL, proposed_by TEXT NOT NULL, approved_by TEXT,
+  live_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS cloud_runs(
+  run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  bundle_id TEXT NOT NULL REFERENCES egress_bundles(bundle_id), profile_id TEXT NOT NULL REFERENCES provider_profiles(profile_id),
+  purpose TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT NOT NULL,
+  result_hash TEXT NOT NULL, turns INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS implementation_attempts(
+  attempt_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  adapter TEXT NOT NULL, attempt INTEGER NOT NULL, status TEXT NOT NULL,
+  request_hash TEXT NOT NULL, result_hash TEXT NOT NULL, changed_paths_json TEXT NOT NULL,
+  diff_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(task_id, adapter, attempt)
+);
+CREATE TABLE IF NOT EXISTS release_records(
+  release_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  system_id TEXT NOT NULL REFERENCES systems(system_id), status TEXT NOT NULL,
+  manifest_json TEXT NOT NULL, manifest_hash TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deployment_records(
+  deployment_id TEXT PRIMARY KEY, release_id TEXT NOT NULL REFERENCES release_records(release_id),
+  task_id TEXT NOT NULL REFERENCES tasks(task_id), environment TEXT NOT NULL,
+  status TEXT NOT NULL, adapter_id TEXT NOT NULL, evidence_json TEXT NOT NULL,
+  approval_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS production_approvals(
+  approval_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  release_id TEXT NOT NULL REFERENCES release_records(release_id), approver TEXT NOT NULL,
+  scope_json TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, consumed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS policy_exceptions(
+  exception_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  rule TEXT NOT NULL, reason TEXT NOT NULL, owner TEXT NOT NULL, status TEXT NOT NULL,
+  expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS operational_jobs(
+  job_id TEXT PRIMARY KEY, job_type TEXT NOT NULL, status TEXT NOT NULL,
+  summary_json TEXT NOT NULL, evidence_hash TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_modifiers(
+  modifier_id TEXT PRIMARY KEY, system_id TEXT NOT NULL REFERENCES systems(system_id),
+  name TEXT NOT NULL, status TEXT NOT NULL, modifier_json TEXT NOT NULL,
+  modifier_hash TEXT NOT NULL, proposed_by TEXT NOT NULL, approved_by TEXT,
+  created_at TEXT NOT NULL, approved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS task_modifier_bindings(
+  task_id TEXT PRIMARY KEY REFERENCES tasks(task_id), modifier_id TEXT NOT NULL REFERENCES project_modifiers(modifier_id),
+  modifier_hash TEXT NOT NULL, bound_at TEXT NOT NULL
 );
 """
 

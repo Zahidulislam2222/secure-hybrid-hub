@@ -18,9 +18,11 @@
   "components": [
     "broker", "policy", "registry", "topology", "dossier",
     "local-workers", "workspaces", "quality-runner", "research-worker",
-    "secret-capability-runner", "egress-dlp", "integrations"
+    "secret-capability-runner", "egress-dlp", "cloud-adapters",
+    "orchestrator", "deployment-coordinator", "operations", "project-modifiers",
+    "integrations"
   ],
-  "implemented_scope": "Phases 0–6 with live research, real secrets, and cloud transmission disabled",
+  "implemented_scope": "Phases 0–10 and Phase 11 synthetic hardening; authorized low-risk client pilot remains pending",
   "human_readable_dossier": "../../PROJECT-DOSSIER.md",
   "phase_checkpoints": [
     "checkpoints/phase-0.json",
@@ -29,14 +31,20 @@
     "checkpoints/phase-3.json",
     "checkpoints/phase-4.json",
     "checkpoints/phase-5.json",
-    "checkpoints/phase-6.json"
+    "checkpoints/phase-6.json",
+    "checkpoints/phase-7.json",
+    "checkpoints/phase-8.json",
+    "checkpoints/phase-9.json",
+    "checkpoints/phase-10.json",
+    "checkpoints/phase-11.json"
   ],
-  "verification_evidence": ["verification/phase-0-3.json", "verification/phase-4.json", "verification/phase-5.json", "verification/phase-6.json"],
+  "verification_evidence": ["verification/phase-0-3.json", "verification/phase-4.json", "verification/phase-5.json", "verification/phase-6.json", "verification/phase-7.json", "verification/phase-8.json", "verification/phase-9.json", "verification/phase-10.json", "verification/phase-11.json"],
   "unresolved_risks": [
-    "Live research, SearXNG, real secret backends, and cloud transmission remain disabled until separately approved; cloud adapters, orchestration, deployment, and regulated pilot phases are not implemented",
-    "Installed small models are evaluated only for plumbing, not production coding quality",
+    "Live research, SearXNG, real secret backends, cloud transmission, and real CI/CD transports remain disabled until separately approved",
+    "Installed qwen3:1.7b passed connectivity but failed the typed implementation contract; a stronger local model requires explicit download approval",
     "Same-user direct runtime database access and local approver identity require operational hardening before regulated use",
     "Quality execution requires Linux Landlock and user/PID/IPC/UTS/network namespace support; Windows executables are denied",
-    "Secret and regulated-data scanners have documented false-positive and false-negative limits"
+    "Secret and regulated-data scanners have documented false-positive and false-negative limits",
+    "The authoritative Phase 11 low-risk client pilot was not performed because development was explicitly synthetic-only; production/regulatory readiness is not claimed"
   ]
 }

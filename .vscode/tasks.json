@@ -20,6 +20,17 @@
       }
     },
     {
+      "label": "Hybrid: Run and Fully Verify",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/hybrid-hub/hub.py", "--runtime", "${workspaceFolder}/hybrid-hub/runtime", "run", "${input:hybridRequest}", "--system", "${input:hybridSystem}", "--through", "verified", "--adapter", "${input:hybridAdapter}", "--model", "${input:hybridModel}"],
+      "problemMatcher": {
+        "owner": "hybrid-hub",
+        "fileLocation": "absolute",
+        "pattern": {"regexp": "^.*\\\"message\\\": \\\"(.*)\\\".*$", "message": 1}
+      }
+    },
+    {
       "label": "Hybrid: Status",
       "type": "process",
       "command": "python3",
@@ -32,11 +43,27 @@
       "command": "python3",
       "args": ["${workspaceFolder}/hybrid-hub/hub.py", "--runtime", "${workspaceFolder}/hybrid-hub/runtime", "emergency-stop"],
       "problemMatcher": []
+    },
+    {
+      "label": "Hybrid: Verify Evidence",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/hybrid-hub/hub.py", "--runtime", "${workspaceFolder}/hybrid-hub/runtime", "verify", "${input:hybridTask}"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Hybrid: Cancel",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/hybrid-hub/hub.py", "--runtime", "${workspaceFolder}/hybrid-hub/runtime", "cancel", "${input:hybridTask}"],
+      "problemMatcher": []
     }
   ],
   "inputs": [
     {"id": "hybridRequest", "type": "promptString", "description": "Task request (never paste credentials or regulated records)"},
     {"id": "hybridSystem", "type": "promptString", "description": "Registered system ID"},
-    {"id": "hybridTask", "type": "promptString", "description": "Task ID"}
+    {"id": "hybridTask", "type": "promptString", "description": "Task ID"},
+    {"id": "hybridAdapter", "type": "pickString", "description": "Local adapter identity", "options": ["codex-local", "claude-local"], "default": "codex-local"},
+    {"id": "hybridModel", "type": "promptString", "description": "Explicitly selected installed local Ollama model"}
   ]
 }

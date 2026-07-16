@@ -147,8 +147,11 @@ class SecretRunner:
         self.audit = audit
         self.registry = registry
         self._sandbox = Path(__file__).with_name("sandbox_exec.py").resolve()
+        self.modifiers = None
 
     def run(self, task_id: str, capability_id: str, backend: SecretBackend) -> dict[str, Any]:
+        if self.modifiers:
+            self.modifiers.require_action(task_id, "secret-capability")
         if backend.name != "synthetic-memory":
             raise PolicyDenied("no real secret backend is authorized in Phase 6")
         with self.database.connect() as connection:

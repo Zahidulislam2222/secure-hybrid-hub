@@ -1,0 +1,16 @@
+{
+  "name": "legal-local",
+  "description": "Legal-matter workflow with local-only research and mandatory specialized local gates.",
+  "classification_floor": "R4",
+  "preferred_local_adapter": "claude-local",
+  "allowed_local_models": ["qwen3:1.7b"],
+  "max_repairs": 2,
+  "context_bytes": 12288,
+  "add_required_gates": ["citation-verification", "matter-separation", "privilege-scan"],
+  "research_mode": "cache-only",
+  "cloud_review": "disabled",
+  "deployment_posture": "none",
+  "deny_actions": ["cloud-review", "live-research", "production", "secret-capability", "staging"],
+  "component_ids": [],
+  "path_prefixes": []
+}

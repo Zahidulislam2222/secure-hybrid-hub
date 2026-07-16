@@ -1,0 +1,16 @@
+{
+  "name": "healthcare-local",
+  "description": "Healthcare workflow that keeps review and research local unless separately re-proposed under client policy.",
+  "classification_floor": "R2",
+  "preferred_local_adapter": "codex-local",
+  "allowed_local_models": ["qwen3:1.7b"],
+  "max_repairs": 2,
+  "context_bytes": 16384,
+  "add_required_gates": ["audit-completeness", "privacy-retention"],
+  "research_mode": "cache-only",
+  "cloud_review": "disabled",
+  "deployment_posture": "none",
+  "deny_actions": ["cloud-review", "live-research", "production", "staging"],
+  "component_ids": [],
+  "path_prefixes": []
+}

@@ -34,6 +34,10 @@ class LeaseManager:
             rows = connection.execute("SELECT * FROM leases ORDER BY resource").fetchall()
         return [dict(row) for row in rows]
 
+    def release_owner(self, owner: str) -> int:
+        with self.database.transaction() as connection:
+            return connection.execute("DELETE FROM leases WHERE owner=?", (owner,)).rowcount
+
     @contextmanager
     def held(self, resource: str, owner: str, ttl_seconds: int = 300):
         self.acquire(resource, owner, ttl_seconds)

@@ -107,7 +107,10 @@ class LocalWorker:
             raise PolicyDenied("task state does not permit a local worker run")
         with self.leases.held("ollama:inference", task_id, ttl_seconds=self.config.timeout + 30):
             if self.config.executable:
-                text = self._process(["run", self.config.model, prompt])
+                process_prompt = prompt
+                if self.config.model.lower().startswith("qwen3") and "/no_think" not in process_prompt:
+                    process_prompt += "\nReturn exactly one compact JSON object on one line. /no_think"
+                text = self._process(["run", self.config.model, process_prompt])
             elif self.config.name == "codex-local":
                 body = {"model": self.config.model, "prompt": prompt, "stream": False, "format": "json", "options": {"temperature": 0}}
                 response = self._request("POST", "/api/generate", body)
@@ -132,11 +135,15 @@ class LocalWorker:
             "OLLAMA_HOST": "http://127.0.0.1:11434",
             "OLLAMA_NO_CLOUD": "1",
             "NO_PROXY": "127.0.0.1,localhost",
+            "NO_COLOR": "1",
+            "TERM": "dumb",
+            "COLUMNS": "10000",
+            "LINES": "1000",
         }
         # Windows executables launched from WSL need these transport markers.
         # They are allowlisted runtime metadata, not provider credentials or
         # arbitrary inherited application configuration.
-        for name in ("WSL_INTEROP", "WSL_DISTRO_NAME", "WSLENV", "WSL_UTF8", "SYSTEMROOT", "WINDIR", "PATH", "LANG", "LC_ALL", "TERM"):
+        for name in ("WSL_INTEROP", "WSL_DISTRO_NAME", "WSLENV", "WSL_UTF8", "SYSTEMROOT", "WINDIR", "PATH", "LANG", "LC_ALL"):
             if name in os.environ:
                 clean_environment[name] = os.environ[name]
         try:

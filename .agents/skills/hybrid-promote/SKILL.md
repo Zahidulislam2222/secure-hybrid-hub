@@ -7,5 +7,6 @@ description: Request a controlled staging or production promotion through the Se
 
 Call the broker's explicit promote command and render its approval requirement.
 Do not run cloud CLIs, use production credentials, bypass staging/canary gates,
-or treat a general request to finish as production authorization. In the
-local-only implementation slice, report the broker's later-phase blocker.
+or treat a general request to finish as production authorization. The broker
+must have a project-local approved CI/CD adapter, verified staging evidence,
+and a fresh single-use human approval; otherwise report its exact blocker.

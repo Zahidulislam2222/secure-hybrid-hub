@@ -31,6 +31,7 @@
     "deployment-result": {"version": "1.0.0", "required_payload": ["environment", "status"]},
     "approval": {"version": "1.0.0", "required_payload": ["subject", "approver", "decision"]},
     "audit-event": {"version": "1.0.0", "required_payload": ["event_type", "event_hash"]},
-    "final-status": {"version": "1.0.0", "required_payload": ["status", "evidence"]}
+    "final-status": {"version": "1.0.0", "required_payload": ["status", "evidence"]},
+    "project-modifier": {"version": "1.0.0", "required_payload": ["name", "classification_floor", "deny_actions"]}
   }
 }
