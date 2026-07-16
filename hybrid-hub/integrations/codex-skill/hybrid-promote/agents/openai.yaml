@@ -1,6 +1,0 @@
-interface:
-  display_name: "Hybrid Promote"
-  short_description: "Request an explicitly approved controlled promotion"
-  default_prompt: "Use $hybrid-promote to request a controlled deployment promotion."
-policy:
-  allow_implicit_invocation: false

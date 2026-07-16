@@ -1,4 +1,0 @@
-interface:
-  display_name: "Hybrid Dossier"
-  short_description: "Query approved project dossier context safely"
-  default_prompt: "Use $hybrid-dossier to show approved context for this project."

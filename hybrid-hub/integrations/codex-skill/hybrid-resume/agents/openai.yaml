@@ -1,4 +1,0 @@
-interface:
-  display_name: "Hybrid Resume"
-  short_description: "Resume a paused broker-controlled task safely"
-  default_prompt: "Use $hybrid-resume to resume the paused broker task safely."

@@ -28,7 +28,11 @@ class ProjectAssetTests(unittest.TestCase):
         self.assertIn("disable-model-invocation: true", (WORKSPACE / ".claude" / "skills" / "hybrid-promote" / "SKILL.md").read_text())
         self.assertFalse((WORKSPACE / ".codex" / "skills").exists())
         json.loads((WORKSPACE / ".vscode" / "tasks.json").read_text())
-        json.loads((ROOT / "integrations" / "vscode" / "tasks.json").read_text())
+        dossier = (WORKSPACE / "PROJECT-DOSSIER.md").read_text()
+        self.assertIn("## 4. Dossier hierarchy and tracing", dossier)
+        self.assertIn("hybrid-hub/dossier/development.json", dossier)
+        self.assertFalse((ROOT / "integrations" / "codex-skill").exists())
+        self.assertFalse((ROOT / "integrations" / "claude-skill").exists())
 
 
 if __name__ == "__main__":

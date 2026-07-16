@@ -20,6 +20,7 @@
     "local-workers", "workspaces", "integrations"
   ],
   "implemented_scope": "Phases 0–3 local-only first slice",
+  "human_readable_dossier": "../../PROJECT-DOSSIER.md",
   "phase_checkpoints": [
     "checkpoints/phase-0.json",
     "checkpoints/phase-1.json",

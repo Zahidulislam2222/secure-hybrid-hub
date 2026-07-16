@@ -13,6 +13,7 @@ The design is not based on one unrestricted agent. An agent that can simultaneou
 
 Start here:
 
+- [Project dossier](PROJECT-DOSSIER.md) — human-readable current project truth and phase history
 - [Final build plan](docs/FINAL_BUILD_PLAN.md) — authoritative implementation specification
 - [Research and architecture](docs/RESEARCH_AND_ARCHITECTURE.md)
 - [Regulated-client security profile](docs/REGULATED_CLIENT_PROFILE.md)

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Hybrid Init"
-  short_description: "Register and discover a synthetic-safe project system"
-  default_prompt: "Use $hybrid-init to register this project with the secure local broker."

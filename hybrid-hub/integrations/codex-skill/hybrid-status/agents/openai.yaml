@@ -1,4 +1,0 @@
-interface:
-  display_name: "Hybrid Status"
-  short_description: "Show broker task status and policy-safe evidence"
-  default_prompt: "Use $hybrid-status to show the current secure broker task status."
