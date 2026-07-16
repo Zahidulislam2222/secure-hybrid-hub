@@ -46,20 +46,36 @@ This adds project-local skills, merges Hub tasks into `.vscode/tasks.json`, and
 creates `.hybrid-hub.json`. It does not create `AGENTS.md` or `CLAUDE.md` and
 does not modify user-global settings.
 
-## One-command local implementation
+## One-command guided local implementation
+
+The recommended path is high-model decomposition plus isolated research and
+one broker-selected file at a time. Create a plan using
+`docs/GUIDED_ORCHESTRATION.md`, then run:
 
 ```bash
 python3 hub.py --runtime /protected/hub-runtime run \
   "Implement the requested change and fully verify it" \
   --system my-system --through verified \
+  --guided-plan /protected/hub-runtime/inbox/plan.json \
+  --supervisor-source codex-interactive \
   --adapter codex-local --model INSTALLED_MODEL
 ```
 
-For a Windows Ollama installation visible from WSL, add the explicit absolute
-`--executable` path. The broker preflights the model before creating a task
-worktree. Models return typed file operations; they never receive arbitrary
-shell authority. Deterministic targeted and full gates—not model confidence—
-decide whether the task reaches `VERIFIED`.
+For a Windows Ollama installation visible from WSL, use the explicit local
+loopback bridge `--http-bridge-executable
+/mnt/c/Windows/System32/curl.exe`. It sends requests only to the validated
+Ollama loopback endpoint, keeps prompts off the command line, and enforces an
+output-token cap and stop sequence. The older `--executable ollama.exe`
+transport remains suitable for short structured probes but guided file
+generation rejects it because it cannot enforce those bounds.
+
+The broker preflights the model before creating a task worktree. The high model
+chooses exact deliverables; the local model returns one raw file body and never
+chooses a path or runs a command. Isolated research workers have internet but
+no repository. Local workers have repository context but no internet and see
+only high-model research guidance plus official source hashes. Deterministic
+per-packet, targeted, and full gates—not model confidence—decide whether the
+task reaches `VERIFIED`.
 
 ## Per-project modifiers
 

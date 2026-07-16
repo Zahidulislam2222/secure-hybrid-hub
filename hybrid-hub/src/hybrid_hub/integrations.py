@@ -83,7 +83,7 @@ class IntegrationInstaller:
         process = {"type": "process", "command": "python3", "problemMatcher": []}
         return {
             "tasks": [
-                {**process, "label": "Hybrid: Run and Verify", "args": [*common, "run", "${input:hybridRequest}", "--system", "${input:hybridSystem}", "--through", "verified", "--adapter", "${input:hybridAdapter}", "--model", "${input:hybridModel}"]},
+                {**process, "label": "Hybrid: Run and Verify", "args": [*common, "run", "${input:hybridRequest}", "--system", "${input:hybridSystem}", "--through", "verified", "--adapter", "${input:hybridAdapter}", "--model", "${input:hybridModel}", "--http-bridge-executable", "${input:hybridHttpBridge}", "--guided-plan", "${input:hybridPlan}", "--supervisor-source", "${input:hybridSupervisor}"]},
                 {**process, "label": "Hybrid: Status", "args": [*common, "status", "${input:hybridTask}"]},
                 {**process, "label": "Hybrid: Verify Evidence", "args": [*common, "verify", "${input:hybridTask}"]},
                 {**process, "label": "Hybrid: Cancel", "args": [*common, "cancel", "${input:hybridTask}"]},
@@ -95,5 +95,8 @@ class IntegrationInstaller:
                 {"id": "hybridTask", "type": "promptString", "description": "Task ID"},
                 {"id": "hybridAdapter", "type": "pickString", "options": ["codex-local", "claude-local"], "default": "codex-local"},
                 {"id": "hybridModel", "type": "promptString", "description": "Explicitly selected installed local Ollama model"},
+                {"id": "hybridPlan", "type": "promptString", "description": "Absolute path to the current high-model guided plan JSON"},
+                {"id": "hybridSupervisor", "type": "pickString", "options": ["codex-interactive", "claude-interactive", "human-approved"], "default": "codex-interactive"},
+                {"id": "hybridHttpBridge", "type": "promptString", "description": "Absolute curl/curl.exe path for bounded local Ollama HTTP (Windows/WSL default: /mnt/c/Windows/System32/curl.exe)"},
             ],
         }

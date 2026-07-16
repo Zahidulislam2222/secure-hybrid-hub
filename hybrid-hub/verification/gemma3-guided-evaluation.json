@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0.0",
+  "evaluation_id": "gemma3-1b-guided-researched-2026-07-17",
+  "evaluated_at": "2026-07-17T03:05:00+06:00",
+  "system_id": "gemma-guided-system",
+  "task_id": "gemma-guided-build-3",
+  "model": "gemma3:1b",
+  "adapter": "codex-local",
+  "transport": "bounded-windows-loopback-http",
+  "supersedes_for_capability_analysis": "gemma3-1b-complex-polyrepo-2026-07-17",
+  "architecture_used": {
+    "high_model_plan": true,
+    "component_packets": 4,
+    "exact_file_deliverables": true,
+    "file_specific_instructions": true,
+    "isolated_official_research": true,
+    "raw_web_text_withheld": true,
+    "sanitized_test_feedback": true,
+    "bounded_repairs": 3
+  },
+  "research_evidence": [
+    {
+      "source_url": "https://docs.python.org/3/library/dataclasses.html",
+      "retrieved_at": "2026-07-16T20:35:49.612661+00:00",
+      "content_hash": "7712b98dcfdb2fab1e051c331515571581bbb94ffb56ffbe984274480318f96a",
+      "size": 30853,
+      "transport": "isolated-direct-official-source",
+      "repository_access": false,
+      "raw_content_sent_to_local_model": false
+    }
+  ],
+  "security_boundary": {
+    "internet_with_repository": false,
+    "cloud_code_egress": false,
+    "cloud_credentials_injected": false,
+    "model_path_authority": false,
+    "model_shell_authority": false,
+    "model_secret_access": false,
+    "real_client_data_used": false,
+    "real_credentials_used": false
+  },
+  "result": {
+    "final_state": "BLOCKED_QUALITY",
+    "block_reason": "guided packet state-model exhausted bounded repairs",
+    "implementation_attempts_applied": 4,
+    "targeted_quality_runs": 4,
+    "targeted_quality_runs_passed": 0,
+    "packets_passed": 0,
+    "release_records": 0,
+    "verified": false,
+    "checkpoint_count": 22,
+    "active_leases_after_completion": 0,
+    "audit_chain_valid": true
+  },
+  "conclusion": "The corrected guided/researched architecture worked and failed closed, but gemma3:1b could not produce a valid state model even with exact file-level instructions and sanitized compiler/test feedback. Internet evidence and prompt precision do not replace minimum model coding capability.",
+  "safe_next_step": "Evaluate the same unchanged plan with another already-installed model, or obtain explicit approval for one stronger coding model. Do not weaken gates or claim production readiness.",
+  "production_readiness_claim": false
+}

@@ -188,6 +188,38 @@ class LocalWorkerTests(IntegrationBase):
         self.assertNotIn("OPENAI_API_KEY", passed_env)
         self.assertEqual(passed_env["OLLAMA_NO_CLOUD"], "1")
 
+    def test_executable_transport_enforces_json_and_disables_word_wrap(self):
+        with patch("pathlib.Path.is_file", return_value=True), patch("subprocess.run") as process:
+            worker = LocalWorker(self.hub.database, self.hub.audit, self.hub.leases, LocalAdapterConfig("codex-local", "http://127.0.0.1:11434", "gemma3:1b", executable="/bin/ollama"))
+            process.return_value.returncode = 0
+            process.return_value.stdout = '{"status":"ok","changed_paths":[]}'
+            process.return_value.stderr = ""
+            worker.run_structured(self.task["task_id"], "Return the required object.")
+        argv = process.call_args.args[0]
+        self.assertIn("--format", argv)
+        self.assertIn("json", argv)
+        self.assertIn("--nowordwrap", argv)
+        self.assertIn("--hidethinking", argv)
+
+    def test_file_worker_uses_bounded_raw_content_and_broker_stop_sequence(self):
+        with patch("pathlib.Path.is_file", return_value=True), patch.object(LocalWorker, "_bridge_request", return_value={"response": "```python\ndef ready():\n    return True\n```\n<<END_FILE>>", "done": True, "done_reason": "stop"}) as bridge:
+            worker = LocalWorker(self.hub.database, self.hub.audit, self.hub.leases, LocalAdapterConfig("codex-local", "http://127.0.0.1:11434", "gemma3:1b", http_bridge_executable="/bin/curl"))
+            result = worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+        self.assertEqual(result["result"]["content"], "def ready():\n    return True\n")
+        payload = bridge.call_args.args[2]
+        self.assertEqual(payload["options"]["num_predict"], 2048)
+        self.assertEqual(payload["options"]["stop"], ["<<END_FILE>>"])
+
+    def test_file_worker_rejects_output_limit_and_cli_transport(self):
+        with patch("pathlib.Path.is_file", return_value=True), patch.object(LocalWorker, "_bridge_request", return_value={"response": "partial", "done": False}):
+            worker = LocalWorker(self.hub.database, self.hub.audit, self.hub.leases, LocalAdapterConfig("codex-local", "http://127.0.0.1:11434", "gemma3:1b", http_bridge_executable="/bin/curl"))
+            with self.assertRaises(Exception):
+                worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+        with patch("pathlib.Path.is_file", return_value=True):
+            cli_worker = LocalWorker(self.hub.database, self.hub.audit, self.hub.leases, LocalAdapterConfig("codex-local", "http://127.0.0.1:11434", "gemma3:1b", executable="/bin/ollama"))
+            with self.assertRaises(Exception):
+                cli_worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+
 
 class CLIAcceptanceTests(IntegrationBase):
     def invoke(self, *arguments, expected=0):

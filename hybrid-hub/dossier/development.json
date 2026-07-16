@@ -19,7 +19,7 @@
     "broker", "policy", "registry", "topology", "dossier",
     "local-workers", "workspaces", "quality-runner", "research-worker",
     "secret-capability-runner", "egress-dlp", "cloud-adapters",
-    "orchestrator", "deployment-coordinator", "operations", "project-modifiers",
+    "orchestrator", "guided-plans", "research-evidence-packets", "deployment-coordinator", "operations", "project-modifiers",
     "integrations"
   ],
   "implemented_scope": "Phases 0–10 and Phase 11 synthetic hardening; authorized low-risk client pilot remains pending",
@@ -38,10 +38,11 @@
     "checkpoints/phase-10.json",
     "checkpoints/phase-11.json"
   ],
-  "verification_evidence": ["verification/phase-0-3.json", "verification/phase-4.json", "verification/phase-5.json", "verification/phase-6.json", "verification/phase-7.json", "verification/phase-8.json", "verification/phase-9.json", "verification/phase-10.json", "verification/phase-11.json"],
+  "remediation_checkpoints": ["checkpoints/phase-8-guided-remediation.json"],
+  "verification_evidence": ["verification/phase-0-3.json", "verification/phase-4.json", "verification/phase-5.json", "verification/phase-6.json", "verification/phase-7.json", "verification/phase-8.json", "verification/phase-9.json", "verification/phase-10.json", "verification/phase-11.json", "verification/guided-orchestration.json", "verification/gemma3-guided-evaluation.json"],
   "unresolved_risks": [
-    "Live research, SearXNG, real secret backends, cloud transmission, and real CI/CD transports remain disabled until separately approved",
-    "Installed qwen3:1.7b passed connectivity but failed the typed implementation contract; a stronger local model requires explicit download approval",
+    "Live research is disabled by default; one ignored synthetic runtime explicitly approved docs.python.org only. SearXNG, real secret backends, cloud transmission, and real CI/CD transports remain disabled until separately approved",
+    "Installed gemma3:1b failed the corrected guided/researched file-level workflow; installed qwen3:1.7b has not yet been evaluated through this corrected path",
     "Same-user direct runtime database access and local approver identity require operational hardening before regulated use",
     "Quality execution requires Linux Landlock and user/PID/IPC/UTS/network namespace support; Windows executables are denied",
     "Secret and regulated-data scanners have documented false-positive and false-negative limits",

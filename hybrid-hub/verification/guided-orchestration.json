@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "verification_id": "phase-8-guided-remediation-2026-07-17",
+  "verified_at": "2026-07-17T03:10:00+06:00",
+  "scope": [
+    "high-model guided plan validation",
+    "per-repository path maps",
+    "exact deliverable enforcement",
+    "isolated research provenance injection",
+    "raw web content withheld from coding models",
+    "one broker-selected file per local inference",
+    "bounded Windows-to-Ollama loopback HTTP bridge",
+    "per-packet deterministic testing and repair diagnostics"
+  ],
+  "automated_tests": {
+    "command": "PYTHONPATH=hybrid-hub/src python3 -m unittest discover -s hybrid-hub/tests -v",
+    "passed": 98,
+    "failed": 0
+  },
+  "security_results": {
+    "local_model_selects_paths": false,
+    "local_model_has_public_internet": false,
+    "research_worker_has_repository": false,
+    "raw_fetched_text_enters_local_prompt": false,
+    "out_of_scope_deliverable_accepted": false,
+    "unbounded_cli_file_generation_allowed": false,
+    "global_configuration_changed": false
+  },
+  "topology_coverage": ["single-repo", "monorepo", "polyrepo-microservices", "hybrid-system"],
+  "result": "passed",
+  "production_readiness_claim": false
+}

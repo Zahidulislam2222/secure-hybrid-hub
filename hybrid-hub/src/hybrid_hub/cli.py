@@ -80,8 +80,20 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--model")
     run.add_argument("--timeout", type=int, default=300)
     run.add_argument("--executable", help="absolute local ollama/ollama.exe path")
+    run.add_argument("--http-bridge-executable", help="absolute local curl/curl.exe path for bounded loopback Ollama HTTP")
     run.add_argument("--max-repairs", type=int, default=3)
     run.add_argument("--modifier", help="approved per-project modifier ID")
+    run.add_argument("--guided-plan", type=Path, help="broker-validated supervisor plan JSON; enables component-sized guided execution")
+    run.add_argument("--supervisor-source", choices=["codex-interactive", "claude-interactive", "human-approved"], help="identity that produced the guided plan")
+
+    plan_command = sub.add_parser("plan")
+    plan_sub = plan_command.add_subparsers(dest="plan_command", required=True)
+    plan_submit = plan_sub.add_parser("submit")
+    plan_submit.add_argument("task_id")
+    plan_submit.add_argument("--file", type=Path, required=True)
+    plan_submit.add_argument("--source", choices=["codex-interactive", "claude-interactive", "human-approved"], required=True)
+    plan_show = plan_sub.add_parser("show")
+    plan_show.add_argument("task_id")
 
     status = sub.add_parser("status")
     status.add_argument("task_id")
@@ -100,6 +112,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--model", required=True)
         command.add_argument("--timeout", type=int, default=120)
         command.add_argument("--executable", help="absolute local ollama/ollama.exe path")
+        command.add_argument("--http-bridge-executable", help="absolute local curl/curl.exe path for bounded loopback Ollama HTTP")
         if action == "run":
             command.add_argument("task_id")
             command.add_argument("--prompt", required=True)
@@ -332,6 +345,12 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         hub.dossier.decide(args.proposal_id, args.approver, not args.reject)
         return {"proposal_id": args.proposal_id, "decision": "rejected" if args.reject else "approved"}
     if args.command == "run":
+        if args.guided_plan and args.through != "verified":
+            raise ValidationError("guided plan is supported only with --through verified")
+        if bool(args.guided_plan) != bool(args.supervisor_source):
+            raise ValidationError("guided execution requires both --guided-plan and --supervisor-source")
+        if args.guided_plan and args.executable and not args.http_bridge_executable:
+            raise AuthorizationRequired("guided file generation cannot use the unbounded Ollama CLI; configure the pinned local curl HTTP bridge")
         system = hub.registry.get_system(args.system)
         policy = compose(system["profiles"])
         classification = max((args.classification, system["classification"]), key=RANK.__getitem__)
@@ -347,7 +366,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                 raise AuthorizationRequired("verified orchestration requires an explicitly selected installed local model")
             if modifier_row and args.model not in modifier_row["modifier"]["allowed_local_models"]:
                 raise PolicyDenied("selected local model is not allowed by the project modifier")
-            config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable)
+            config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable, http_bridge_executable=args.http_bridge_executable)
             worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
             worker.preflight()
         task = hub.tasks.create(args.system, args.request, classification, policy.policy_hash, args.task_id)
@@ -357,19 +376,34 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
             task = hub.tasks.transition(task["task_id"], target)
         if args.through == "scoped":
             return task
-        plan = hub.orchestrator.plan(task["task_id"]) if args.through == "verified" else None
+        if args.through == "verified" and args.guided_plan:
+            template = json.loads(args.guided_plan.read_text(encoding="utf-8"))
+            plan = hub.orchestrator.submit_guided_plan(task["task_id"], template, args.supervisor_source)
+        else:
+            plan = hub.orchestrator.plan(task["task_id"]) if args.through == "verified" else None
         workspace = None
         if args.create_workspaces or args.through == "verified":
             repo_ids = args.repo
             if not repo_ids:
-                repo_ids = [item["repo_id"] for item in hub.registry.discover(args.system)["repositories"]]
+                if args.guided_plan:
+                    repo_ids = sorted({repo_id for packet in plan["plan"]["packets"] for repo_id in packet["repository_ids"]})
+                else:
+                    repo_ids = [item["repo_id"] for item in hub.registry.discover(args.system)["repositories"]]
             workspace = hub.workspaces.create(task["task_id"], repo_ids)
         task = hub.tasks.transition(task["task_id"], "WORKSPACES_READY", evidence=[workspace["manifest_hash"]] if workspace else ["local-only-dry-run"])
         if args.through == "verified":
             def driver(task_id, prompt, attempt, role):
+                if role.endswith(":file"):
+                    return worker.run_file(task_id, prompt)["result"]
                 return worker.run_structured(task_id, prompt)["result"]
+            if args.guided_plan:
+                return hub.orchestrator.complete_guided(task["task_id"], driver, adapter=args.adapter, max_repairs=args.max_repairs)
             return hub.orchestrator.complete(task["task_id"], driver, adapter=args.adapter, max_repairs=args.max_repairs)
         return {"task": task, "workspace": workspace, "authorized_scope": "local-ready", "next": "run --through verified with an explicitly selected installed model, or inspect status"}
+    if args.command == "plan":
+        if args.plan_command == "submit":
+            return hub.orchestrator.submit_guided_plan(args.task_id, json.loads(args.file.read_text(encoding="utf-8")), args.source)
+        return hub.guided_plans.get(args.task_id)
     if args.command == "status":
         return hub.status(args.task_id)
     if args.command == "cancel":
@@ -377,7 +411,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
     if args.command == "resume":
         return hub.tasks.resume(args.task_id, args.to)
     if args.command == "local":
-        config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable)
+        config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable, http_bridge_executable=args.http_bridge_executable)
         worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
         return worker.preflight() if args.local_command == "preflight" else worker.run_structured(args.task_id, args.prompt)
     if args.command == "workspace":

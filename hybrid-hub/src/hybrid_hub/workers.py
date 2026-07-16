@@ -51,6 +51,7 @@ class LocalAdapterConfig:
     max_prompt_bytes: int = 32768
     max_output_bytes: int = 65536
     executable: str | None = None
+    http_bridge_executable: str | None = None
 
     def __post_init__(self):
         if self.name not in {"codex-local", "claude-local"}:
@@ -62,6 +63,13 @@ class LocalAdapterConfig:
             executable = Path(self.executable)
             if not executable.is_absolute() or not executable.is_file() or executable.name.lower() not in {"ollama", "ollama.exe"}:
                 raise ValidationError("local Ollama executable must be an existing absolute ollama path")
+        if self.http_bridge_executable is not None:
+            bridge = Path(self.http_bridge_executable)
+            if not bridge.is_absolute() or not bridge.is_file() or bridge.name.lower() not in {"curl", "curl.exe"}:
+                raise ValidationError("local HTTP bridge must be an existing absolute curl executable")
+            allowed_bridges = {Path("/usr/bin/curl").resolve(), Path("/mnt/c/Windows/System32/curl.exe").resolve()}
+            if bridge.resolve() not in allowed_bridges:
+                raise PolicyDenied("local HTTP bridge must be the pinned OS curl executable")
 
 
 class LocalWorker:
@@ -76,7 +84,11 @@ class LocalWorker:
     def preflight(self) -> dict[str, Any]:
         if self.database.emergency_stopped():
             raise PolicyDenied("emergency stop is active")
-        if self.config.executable:
+        if self.config.http_bridge_executable:
+            response = self._bridge_request("GET", "/api/tags", None)
+            models = sorted(item.get("name", "") for item in response.get("models", []) if item.get("name"))
+            transport = "bounded-windows-loopback-http"
+        elif self.config.executable:
             completed = self._process(["list"])
             models = sorted(line.split()[0] for line in completed.splitlines()[1:] if line.split())
             transport = "bounded-ollama-cli"
@@ -106,11 +118,15 @@ class LocalWorker:
         if task["state"] not in {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING", "LOCAL_FIXING"}:
             raise PolicyDenied("task state does not permit a local worker run")
         with self.leases.held("ollama:inference", task_id, ttl_seconds=self.config.timeout + 30):
-            if self.config.executable:
+            if self.config.http_bridge_executable:
+                body = {"model": self.config.model, "prompt": prompt, "stream": False, "format": "json", "options": {"temperature": 0, "num_predict": 4096}}
+                response = self._bridge_request("POST", "/api/generate", body)
+                text = response.get("response", "")
+            elif self.config.executable:
                 process_prompt = prompt
                 if self.config.model.lower().startswith("qwen3") and "/no_think" not in process_prompt:
                     process_prompt += "\nReturn exactly one compact JSON object on one line. /no_think"
-                text = self._process(["run", self.config.model, process_prompt])
+                text = self._process(["run", self.config.model, process_prompt, "--format", "json", "--nowordwrap", "--hidethinking"])
             elif self.config.name == "codex-local":
                 body = {"model": self.config.model, "prompt": prompt, "stream": False, "format": "json", "options": {"temperature": 0}}
                 response = self._request("POST", "/api/generate", body)
@@ -127,6 +143,55 @@ class LocalWorker:
             result = {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "result": parsed, "output_hash": sha256_json(parsed), "completed_at": utc_now()}
             self.audit.append("worker.completed", {key: result[key] for key in ("adapter", "model", "task_id", "output_hash")}, system_id=task["system_id"], task_id=task_id)
             return result
+
+    def run_file(self, task_id: str, prompt: str) -> dict[str, Any]:
+        """Generate one broker-selected text file without giving path authority to the model."""
+        bounded_text(prompt, self.config.max_prompt_bytes, "file worker prompt")
+        for pattern in SECRET_PATTERNS:
+            if pattern.search(prompt):
+                raise PolicyDenied("credential-like material is not allowed in file model context")
+        if self.database.emergency_stopped():
+            raise PolicyDenied("emergency stop is active")
+        with self.database.connect() as connection:
+            task = connection.execute("SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved FROM tasks JOIN systems USING(system_id) WHERE task_id=?", (task_id,)).fetchone()
+        if not task or task["cancelled"] or not task["approved"]:
+            raise PolicyDenied("task unavailable or cancelled")
+        if task["state"] not in {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING", "LOCAL_FIXING"}:
+            raise PolicyDenied("task state does not permit a local file worker run")
+        body = {"model": self.config.model, "prompt": prompt, "stream": False, "options": {"temperature": 0, "num_predict": 2048, "stop": ["<<END_FILE>>"]}}
+        with self.leases.held("ollama:inference", task_id, ttl_seconds=self.config.timeout + 30):
+            if self.config.http_bridge_executable:
+                response = self._bridge_request("POST", "/api/generate", body)
+            elif not self.config.executable:
+                response = self._request("POST", "/api/generate", body)
+            else:
+                raise AdapterError("guided file generation requires bounded loopback HTTP; configure the local curl bridge instead of the Ollama CLI")
+        if response.get("done") is not True or response.get("done_reason") == "length":
+            raise AdapterError("local file generation reached its output limit before the stop sequence")
+        text = response.get("response", "")
+        if not isinstance(text, str):
+            raise AdapterError("local file generation returned non-text content")
+        text = self._clean_file_text(text)
+        if not text or len(text.encode("utf-8")) > self.config.max_output_bytes:
+            raise AdapterError("local file generation is empty or exceeds the limit")
+        for pattern in SECRET_PATTERNS:
+            if pattern.search(text):
+                raise PolicyDenied("local file generation contains credential-like material")
+        result_payload = {"status": "ok", "changed_paths": [], "content": text}
+        result = {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "result": result_payload, "output_hash": sha256_json(result_payload), "completed_at": utc_now()}
+        self.audit.append("worker.file-completed", {key: result[key] for key in ("adapter", "model", "task_id", "output_hash")}, system_id=task["system_id"], task_id=task_id)
+        return result
+
+    @staticmethod
+    def _clean_file_text(text: str) -> str:
+        clean = ANSI_ESCAPE.sub("", text).strip()
+        if "<<END_FILE>>" in clean:
+            clean = clean.split("<<END_FILE>>", 1)[0].rstrip()
+        if clean.startswith("```"):
+            lines = clean.splitlines()
+            if len(lines) >= 3 and lines[-1].strip() == "```":
+                clean = "\n".join(lines[1:-1]).strip()
+        return clean + "\n" if clean else ""
 
     def _process(self, arguments: list[str]) -> str:
         if not self.config.executable:
@@ -180,6 +245,45 @@ class LocalWorker:
             raise AdapterError("adapter returned invalid JSON") from exc
         if not isinstance(result, dict):
             raise AdapterError("adapter returned a non-object")
+        return result
+
+    def _bridge_request(self, method: str, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not self.config.http_bridge_executable:
+            raise AdapterError("local HTTP bridge is not configured")
+        if path not in {"/api/tags", "/api/generate"}:
+            raise PolicyDenied("local HTTP bridge path is not approved")
+        data = b"" if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if len(data) > self.config.max_prompt_bytes + 4096:
+            raise AdapterError("local HTTP bridge request exceeds limit")
+        command = [
+            self.config.http_bridge_executable,
+            "--silent", "--show-error", "--fail-with-body", "--noproxy", "*",
+            "--connect-timeout", "5", "--max-time", str(self.config.timeout),
+            "--header", "Content-Type: application/json", "--header", "Accept: application/json",
+            "--request", method,
+        ]
+        if payload is not None:
+            command.extend(["--data-binary", "@-"])
+        command.append(self.base + path)
+        environment = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost", "PATH": ""}
+        for name in ("WSL_INTEROP", "WSL_DISTRO_NAME", "WSLENV", "WSL_UTF8", "SYSTEMROOT", "WINDIR"):
+            if name in os.environ:
+                environment[name] = os.environ[name]
+        try:
+            completed = subprocess.run(command, input=data, capture_output=True, timeout=self.config.timeout + 10, check=False, env=environment)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AdapterError(f"local loopback HTTP bridge failed: {type(exc).__name__}") from exc
+        if completed.returncode:
+            error = completed.stderr.decode("utf-8", errors="replace")[:200]
+            raise AdapterError(f"local loopback HTTP bridge exited {completed.returncode}: {error}")
+        if len(completed.stdout) > self.config.max_output_bytes:
+            raise AdapterError("local loopback HTTP bridge output exceeds limit")
+        try:
+            result = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise AdapterError("local loopback HTTP bridge returned invalid JSON") from exc
+        if not isinstance(result, dict):
+            raise AdapterError("local loopback HTTP bridge returned a non-object")
         return result
 
     @staticmethod

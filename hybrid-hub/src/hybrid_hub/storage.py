@@ -173,6 +173,19 @@ CREATE TABLE IF NOT EXISTS task_modifier_bindings(
   task_id TEXT PRIMARY KEY REFERENCES tasks(task_id), modifier_id TEXT NOT NULL REFERENCES project_modifiers(modifier_id),
   modifier_hash TEXT NOT NULL, bound_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS guided_plans(
+  plan_id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  system_id TEXT NOT NULL REFERENCES systems(system_id), source TEXT NOT NULL,
+  status TEXT NOT NULL, plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS guided_packets(
+  task_id TEXT NOT NULL REFERENCES tasks(task_id), packet_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL, status TEXT NOT NULL, packet_json TEXT NOT NULL,
+  packet_hash TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+  result_hash TEXT, quality_digest TEXT, updated_at TEXT NOT NULL,
+  PRIMARY KEY(task_id, packet_id), UNIQUE(task_id, sequence)
+);
 """
 
 

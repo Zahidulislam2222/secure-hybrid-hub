@@ -14,6 +14,7 @@ from .operations import OperationsManager
 from .orchestrator import Orchestrator
 from .integrations import IntegrationInstaller
 from .modifiers import ModifierStore
+from .guided import EvidencePacketBuilder, GuidedPlanStore
 from .secrets import CapabilityRegistry, SecretRunner
 from .registry import Registry
 from .state import TaskManager
@@ -44,6 +45,10 @@ class Hub:
         self.operations = OperationsManager(self.database, self.audit)
         self.integrations = IntegrationInstaller(self.database, self.audit, Path(__file__).resolve().parents[3])
         self.modifiers = ModifierStore(self.database, self.audit, self.dossier)
+        self.guided_plans = GuidedPlanStore(self.database, self.audit, self.dossier)
+        self.research_packets = EvidencePacketBuilder(self.research, self.audit)
+        self.orchestrator.guided_plans = self.guided_plans
+        self.orchestrator.research_packets = self.research_packets
         self.orchestrator.modifiers = self.modifiers
         self.orchestrator.leases = self.leases
         self.quality.modifiers = self.modifiers
