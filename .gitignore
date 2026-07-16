@@ -1,0 +1,40 @@
+# Broker runtime and generated evidence
+hybrid-hub/runtime/
+**/runtime/hub.sqlite3*
+**/runtime/workspaces/
+**/runtime/egress/
+**/runtime/cache/
+**/runtime/locks/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Credentials, local overrides, and sensitive artifacts
+.env
+.env.*
+!.env.example
+!hybrid-hub/tests/fixtures/security/.env.synthetic
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.db
+*.log
+.claude/settings.local.json
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp

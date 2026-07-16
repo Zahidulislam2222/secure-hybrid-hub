@@ -1,0 +1,10 @@
+{
+  "name": "synthetic-monorepo",
+  "components": [
+    {"id": "appointments", "path": "packages/appointments", "type": "service"},
+    {"id": "notifications", "path": "packages/notifications", "type": "service"}
+  ],
+  "dependencies": [
+    {"from": "appointments", "to": "notifications", "kind": "event"}
+  ]
+}

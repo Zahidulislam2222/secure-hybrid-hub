@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hybrid Run"
+  short_description: "Run a broker-controlled local development task"
+  default_prompt: "Use $hybrid-run to run this task through the secure local broker."

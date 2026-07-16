@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-3",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-3",
+  "state": "completed",
+  "created_at": "2026-07-16T22:31:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "repository", "adapter", "implementation-task"],
+  "effective_policy_hash": "400f5d20e841412a8157410da25508dfa93023ebf36416ddf931f63995ce092c",
+  "delivered": [
+    "codex-local and claude-local adapter identities",
+    "loopback-only HTTP and bounded local executable transports",
+    "provider-mode and installed-model preflight",
+    "strict structured implementation-result validation",
+    "single Ollama inference lease",
+    "Git worktree and cross-repository workspace manager",
+    "Codex, Claude Code, terminal, and VS Code local surfaces",
+    "live synthetic structured exchange using installed qwen3:1.7b"
+  ],
+  "evidence": ["tests/test_integration.py", "verification/phase-0-3.json"],
+  "unresolved_risks": [
+    "gemma3:1b proved connectivity but failed the required result contract by omitting changed_paths",
+    "No production coding-quality claim is made for installed small models",
+    "Cloud, internet research, real secret use, and deployment remain disabled"
+  ],
+  "next_allowed_phase": "phase-4-after-explicit-authorization"
+}

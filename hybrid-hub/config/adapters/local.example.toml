@@ -1,0 +1,15 @@
+[codex-local]
+mode = "local"
+endpoint = "http://127.0.0.1:11434"
+model = "qwen3:1.7b"
+network = ["127.0.0.1:11434"]
+max_seconds = 120
+max_output_bytes = 65536
+
+[claude-local]
+mode = "local"
+endpoint = "http://127.0.0.1:11434"
+model = "qwen3:1.7b"
+network = ["127.0.0.1:11434"]
+max_seconds = 120
+max_output_bytes = 65536

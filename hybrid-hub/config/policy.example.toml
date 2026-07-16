@@ -1,0 +1,54 @@
+[managed]
+baseline = "regulated"
+cloud_enabled = false
+research_network_enabled = false
+production_enabled = false
+unknown_content = "restricted"
+max_local_repairs = 3
+max_cloud_repairs = 3
+max_artifact_bytes = 1048576
+
+[profiles.regulated]
+max_classification = "R1"
+cloud_code_egress = false
+internet_with_repo = false
+model_secret_access = false
+production_model_access = false
+retention_days = 30
+required_gates = ["parse", "unit", "secret-scan", "test-integrity"]
+
+[profiles.healthcare]
+max_classification = "R2"
+cloud_code_egress = false
+internet_with_repo = false
+model_secret_access = false
+production_model_access = false
+retention_days = 14
+required_gates = ["phi-scan", "audit-completeness", "privacy-retention"]
+
+[profiles.legal]
+max_classification = "R4"
+cloud_code_egress = false
+internet_with_repo = false
+model_secret_access = false
+production_model_access = false
+retention_days = 14
+required_gates = ["privilege-scan", "citation-verification", "matter-separation"]
+
+[profiles.high-secret]
+max_classification = "R4"
+cloud_code_egress = false
+internet_with_repo = false
+model_secret_access = false
+production_model_access = false
+retention_days = 7
+required_gates = ["no-project-egress", "independent-review"]
+
+[profiles.production-critical]
+max_classification = "R2"
+cloud_code_egress = false
+internet_with_repo = false
+model_secret_access = false
+production_model_access = false
+retention_days = 30
+required_gates = ["staging", "canary", "rollback", "human-production-approval"]

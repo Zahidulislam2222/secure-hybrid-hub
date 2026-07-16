@@ -1,0 +1,3 @@
+{
+  "paths": ["../sibling", "/etc/passwd", "file:///etc/passwd", "C:\\Windows\\System32", "repo/link-out"]
+}

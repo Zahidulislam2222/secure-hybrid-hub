@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "Secure Hybrid Hub Phases 0–3, synthetic-only",
+  "verified_at": "2026-07-16T22:31:00+06:00",
+  "effective_policy_hash": "400f5d20e841412a8157410da25508dfa93023ebf36416ddf931f63995ce092c",
+  "cloud_egress_enabled": false,
+  "research_network_enabled": false,
+  "real_credentials_used": false,
+  "real_client_data_used": false,
+  "production_access_used": false,
+  "downloads_or_installations": false,
+  "automated_test_command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
+  "automated_test_count": 35,
+  "automated_test_status": "passed",
+  "validated_areas": [
+    "unit", "integration", "adversarial", "security", "single-repo",
+    "monorepo", "polyrepo-microservice", "failure-rollback", "resumability",
+    "worktree-leases", "CLI-end-to-end", "Codex-skills", "Claude-skills", "VS-Code"
+  ],
+  "live_local_model_checks": [
+    {
+      "adapter": "codex-local",
+      "model": "qwen3:1.7b",
+      "preflight": "passed",
+      "structured_contract": "passed",
+      "output_hash": "0691411acaa3156dfdb175a98e934f78eaf13189004c5f2deab085e5321ab108"
+    },
+    {
+      "adapter": "claude-local",
+      "model": "qwen3:1.7b",
+      "preflight": "passed",
+      "structured_contract": "passed",
+      "output_hash": "0691411acaa3156dfdb175a98e934f78eaf13189004c5f2deab085e5321ab108"
+    },
+    {
+      "adapter": "claude-local-connectivity-observation",
+      "model": "gemma3:1b",
+      "preflight": "passed",
+      "structured_contract": "failed-closed: missing changed_paths",
+      "production_quality_claim": false
+    }
+  ],
+  "blocked_later_phases": [
+    "Phase 4 deterministic quality engine",
+    "Phase 5 isolated network research and SearXNG installation",
+    "Phase 6 secret backend and egress DLP",
+    "Phase 7 cloud account adapters",
+    "Phase 8 full recovery orchestration",
+    "Phase 10 staging/production adapters",
+    "Phase 11 regulated pilot"
+  ]
+}

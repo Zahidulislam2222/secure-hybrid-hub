@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hybrid Cancel"
+  short_description: "Cancel a broker task while preserving evidence"
+  default_prompt: "Use $hybrid-cancel to cancel this broker task and preserve evidence."

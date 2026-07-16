@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-2",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-2",
+  "state": "completed",
+  "created_at": "2026-07-16T22:25:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "repository", "implementation-task"],
+  "effective_policy_hash": "400f5d20e841412a8157410da25508dfa93023ebf36416ddf931f63995ce092c",
+  "delivered": [
+    "explicit opt-in system registry and disable control",
+    "deterministic discovery without cloud content transfer",
+    "client-separated canonical root authorization",
+    "single-repo and monorepo component discovery",
+    "polyrepo service dependency graph and deterministic release manifest",
+    "hierarchical versioned dossier with provenance",
+    "human-gated protected proposals and mechanical updates",
+    "policy-scanned safe dossier projection"
+  ],
+  "evidence": ["tests/test_integration.py", "tests/test_unit.py", "verification/phase-0-3.json"],
+  "unresolved_risks": ["Large real systems require separate explicit registration and synthetic-first validation"],
+  "next_allowed_phase": "phase-3"
+}

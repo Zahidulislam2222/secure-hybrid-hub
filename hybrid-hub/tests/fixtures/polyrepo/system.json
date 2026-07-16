@@ -1,0 +1,11 @@
+{
+  "name": "synthetic-care-system",
+  "repositories": ["contracts", "appointment-service", "notification-service"],
+  "components": ["contracts", "appointment-service", "notification-service"],
+  "dependencies": [
+    {"from": "appointment-service", "to": "contracts", "kind": "schema"},
+    {"from": "notification-service", "to": "contracts", "kind": "schema"},
+    {"from": "appointment-service", "to": "notification-service", "kind": "event"}
+  ],
+  "deployment_order": ["contracts", "notification-service", "appointment-service"]
+}

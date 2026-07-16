@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-1",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-1",
+  "state": "completed",
+  "created_at": "2026-07-16T22:20:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system", "implementation-task"],
+  "effective_policy_hash": "400f5d20e841412a8157410da25508dfa93023ebf36416ddf931f63995ce092c",
+  "delivered": [
+    "versioned artifact catalog and fail-closed validation",
+    "SQLite transactional state and content-addressed artifacts",
+    "atomic writes and restrictive runtime directories",
+    "hash-chained sanitized audit events",
+    "safe path canonicalization and Windows/WSL mapping",
+    "strictest-wins policy engine",
+    "leases, cancellation, and emergency stop",
+    "transactional task transition plus dossier checkpoint"
+  ],
+  "evidence": ["tests/test_unit.py", "tests/test_adversarial.py", "verification/phase-0-3.json"],
+  "unresolved_risks": ["Later quality, research, DLP, cloud, deployment, and operational phases remain disabled"],
+  "next_allowed_phase": "phase-2"
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "system_id": "secure-hybrid-hub",
+  "title": "Secure Hybrid AI Development Hub",
+  "classification": "R1",
+  "profiles": ["regulated", "confidential", "production-critical"],
+  "purpose": "Deterministic local control plane for policy-safe hybrid AI development",
+  "approved_scope": "Synthetic-only implementation and verification",
+  "global_rules": {
+    "cloud_enabled": false,
+    "research_network_enabled": false,
+    "production_enabled": false,
+    "real_credentials_allowed": false,
+    "real_client_data_allowed": false,
+    "new_models_allowed": false,
+    "new_services_allowed": false
+  },
+  "components": [
+    "broker", "policy", "registry", "topology", "dossier",
+    "local-workers", "workspaces", "integrations"
+  ],
+  "implemented_scope": "Phases 0–3 local-only first slice",
+  "phase_checkpoints": [
+    "checkpoints/phase-0.json",
+    "checkpoints/phase-1.json",
+    "checkpoints/phase-2.json",
+    "checkpoints/phase-3.json"
+  ],
+  "verification_evidence": ["verification/phase-0-3.json"],
+  "unresolved_risks": [
+    "Quality-engine, research-network, DLP/secret-runner, cloud, deployment, and regulated pilot phases are not authorized",
+    "Installed small models are evaluated only for plumbing, not production coding quality"
+  ]
+}

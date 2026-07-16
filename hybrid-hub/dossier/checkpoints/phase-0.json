@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "checkpoint_id": "secure-hybrid-hub-phase-0",
+  "system_id": "secure-hybrid-hub",
+  "phase": "phase-0",
+  "state": "completed",
+  "created_at": "2026-07-16T00:00:00+06:00",
+  "actor": "codex-primary",
+  "classification": "R1",
+  "effective_policy_layers": ["managed/global", "system"],
+  "effective_policy_hash": "400f5d20e841412a8157410da25508dfa93023ebf36416ddf931f63995ce092c",
+  "delivered": [
+    "runtime inventory",
+    "pre-implementation restore manifest",
+    "synthetic single-repo fixture",
+    "synthetic monorepo fixture",
+    "synthetic polyrepo fixture",
+    "synthetic security/adversarial fixtures",
+    "threat-to-test mapping"
+  ],
+  "evidence": [
+    "docs/PHASE_0_BASELINE.md",
+    "docs/phase0-preimplementation-sha256.txt",
+    "tests/fixtures"
+  ],
+  "unresolved_risks": [
+    "Claude Code WSL preflight unavailable",
+    "No production-quality judgment made for small Ollama models"
+  ],
+  "next_allowed_phase": "phase-1"
+}

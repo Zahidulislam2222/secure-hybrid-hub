@@ -1,0 +1,5 @@
+{
+  "name": "synthetic-single",
+  "components": [{"id": "app", "path": ".", "type": "application"}],
+  "commands": {"unit": ["python3", "-m", "unittest", "discover"]}
+}

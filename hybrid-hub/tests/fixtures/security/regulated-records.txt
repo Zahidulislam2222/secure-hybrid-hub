@@ -1,0 +1,2 @@
+SYNTHETIC PHI: Patient Example, MRN 000-00-0000, fictional diagnosis.
+SYNTHETIC PII: person@example.invalid, +1-555-0100.
