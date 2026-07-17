@@ -5,7 +5,8 @@ from pathlib import Path
 from .audit import AuditLog
 from .dossier import DossierStore
 from .leases import LeaseManager
-from .quality import QualityRegistry, QualityRunner
+from .quality import QualityRegistry
+from .self_hosting_quality import AttestedQualityRunner
 from .research import ResearchManager, ResearchPolicyStore
 from .egress import EgressBuilder
 from .cloud import CloudAdapter, ProviderProfileStore
@@ -32,7 +33,7 @@ class Hub:
         self.leases = LeaseManager(self.database)
         self.workspaces = WorkspaceManager(self.database, self.audit, self.leases)
         self.quality_registry = QualityRegistry(self.database, self.audit, self.dossier)
-        self.quality = QualityRunner(self.database, self.audit, self.dossier, self.quality_registry)
+        self.quality = AttestedQualityRunner(self.database, self.audit, self.dossier, self.quality_registry)
         self.research_policies = ResearchPolicyStore(self.database, self.audit)
         self.research = ResearchManager(self.database, self.audit, self.research_policies)
         self.capabilities = CapabilityRegistry(self.database, self.audit)
