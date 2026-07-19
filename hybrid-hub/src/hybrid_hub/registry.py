@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -89,19 +90,34 @@ class Registry:
             manifests: list[str] = []
             guidance: list[str] = []
             suspected_sensitive: list[str] = []
-            for path in root.rglob("*"):
-                if len(path.relative_to(root).parts) > 6:
+            # Explicit walk instead of rglob: VCS metadata is pruned (git
+            # background maintenance mutates .git/objects concurrently, and
+            # topology discovery must not depend on VCS internals), and a
+            # directory vanishing mid-walk is tolerated instead of raised.
+            pending = [root]
+            while pending:
+                directory = pending.pop()
+                try:
+                    entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+                except (FileNotFoundError, NotADirectoryError, PermissionError):
                     continue
-                if path.is_symlink():
-                    continue
-                if path.is_file():
-                    relative = path.relative_to(root).as_posix()
-                    if path.name in MANIFEST_NAMES or path.suffix in {".csproj", ".sln"}:
-                        manifests.append(relative)
-                    if path.name in {"AGENTS.md", "CLAUDE.md", "SECURITY.md", "PRIVACY.md"}:
-                        guidance.append(relative)
-                    if path.name.startswith(".env") or path.suffix in {".pem", ".key", ".p12", ".db", ".sqlite"}:
-                        suspected_sensitive.append(relative)
+                for entry in entries:
+                    path = Path(entry.path)
+                    depth = len(path.relative_to(root).parts)
+                    if depth > 6 or entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name != ".git":
+                            pending.append(path)
+                        continue
+                    if entry.is_file(follow_symlinks=False):
+                        relative = path.relative_to(root).as_posix()
+                        if path.name in MANIFEST_NAMES or path.suffix in {".csproj", ".sln"}:
+                            manifests.append(relative)
+                        if path.name in {"AGENTS.md", "CLAUDE.md", "SECURITY.md", "PRIVACY.md"}:
+                            guidance.append(relative)
+                        if path.name.startswith(".env") or path.suffix in {".pem", ".key", ".p12", ".db", ".sqlite"}:
+                            suspected_sensitive.append(relative)
             git = self._git_metadata(root)
             repo_id = f"{system_id}-repo-{index + 1}"
             kind = "git" if git["is_git"] else "directory"
