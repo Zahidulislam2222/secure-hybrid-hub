@@ -20,6 +20,9 @@ from .storage import Database
 from .util import bounded_text, sha256_json, utc_now
 
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# The single authoritative definition of the guided file-generation stop
+# marker; prompts, stop sequences, and output cleanup all import it.
+FILE_STOP_MARKER = "<<END_FILE>>"
 
 
 def _validate_loopback(endpoint: str) -> str:
@@ -158,7 +161,7 @@ class LocalWorker:
             raise PolicyDenied("task unavailable or cancelled")
         if task["state"] not in {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING", "LOCAL_FIXING"}:
             raise PolicyDenied("task state does not permit a local file worker run")
-        body = {"model": self.config.model, "prompt": prompt, "stream": False, "options": {"temperature": 0, "num_predict": 2048, "stop": ["<<END_FILE>>"]}}
+        body = {"model": self.config.model, "prompt": prompt, "stream": False, "options": {"temperature": 0, "num_predict": 2048, "stop": [FILE_STOP_MARKER]}}
         with self.leases.held("ollama:inference", task_id, ttl_seconds=self.config.timeout + 30):
             if self.config.http_bridge_executable:
                 response = self._bridge_request("POST", "/api/generate", body)
@@ -185,8 +188,8 @@ class LocalWorker:
     @staticmethod
     def _clean_file_text(text: str) -> str:
         clean = ANSI_ESCAPE.sub("", text).strip()
-        if "<<END_FILE>>" in clean:
-            clean = clean.split("<<END_FILE>>", 1)[0].rstrip()
+        if FILE_STOP_MARKER in clean:
+            clean = clean.split(FILE_STOP_MARKER, 1)[0].rstrip()
         lines = clean.splitlines()
         # The stop sequence can cut generation while the model is still inside
         # a markdown fence, so a leading fence line is stripped even when the

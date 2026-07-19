@@ -190,6 +190,14 @@ class HttpApiWorkerTests(HttpApiWorkerBase):
         with self.assertRaises(PolicyDenied):
             worker.run_file(self.task["task_id"], "Generate one synthetic file.")
 
+    def test_refuses_cap_above_the_approved_provider_cost_limit(self):
+        self.approve_provider(max_cost=0.10)
+        worker = self.worker(cap=0.25)
+        with patch("hybrid_hub.http_api_worker._http_post") as post:
+            with self.assertRaises(PolicyDenied):
+                worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+        post.assert_not_called()
+
     def test_cap_exceeding_call_blocks_and_next_call_never_egresses(self):
         self.approve_provider()
         worker = self.worker(cap=0.001, input_cost=100.0, output_cost=100.0)

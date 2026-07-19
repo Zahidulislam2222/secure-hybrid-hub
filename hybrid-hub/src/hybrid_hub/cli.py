@@ -83,12 +83,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--endpoint", default="http://127.0.0.1:11434")
     run.add_argument("--api-base-url", help="HTTPS base URL for HTTP API adapters (OpenAI-compatible URLs include the vendor path prefix)")
     run.add_argument("--api-key-file", help="absolute path to a private single-line API key file (never read from environment)")
-    run.add_argument("--api-version", default=DEFAULT_ANTHROPIC_VERSION, help="anthropic-version header for the anthropic-api adapter")
+    run.add_argument("--api-version", help="anthropic-version header for the anthropic-api adapter")
     run.add_argument("--input-cost-per-mtok", type=float, help="input token price in USD per million tokens (required for HTTP API adapters)")
     run.add_argument("--output-cost-per-mtok", type=float, help="output token price in USD per million tokens (required for HTTP API adapters)")
     run.add_argument("--max-task-cost-usd", type=float, help="hard per-task API spend cap in USD (required for HTTP API adapters)")
     run.add_argument("--model")
-    run.add_argument("--timeout", type=int, default=300)
+    run.add_argument("--timeout", type=int, help="worker timeout in seconds (defaults to the stored selection's value, else 300)")
     run.add_argument("--executable", help="absolute local ollama/ollama.exe path")
     run.add_argument("--http-bridge-executable", help="absolute local curl/curl.exe path for bounded loopback Ollama HTTP")
     run.add_argument("--max-repairs", type=int, default=3)
@@ -377,6 +377,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         endpoint, bridge, cli_executable = args.endpoint, args.http_bridge_executable, args.cli_executable
         api_base_url, api_key_file, api_version = args.api_base_url, args.api_key_file, args.api_version
         input_cost, output_cost, max_task_cost = args.input_cost_per_mtok, args.output_cost_per_mtok, args.max_task_cost_usd
+        timeout = args.timeout
         if args.through == "verified":
             if not model:
                 selection = selected_transport(hub.database, hub.audit, args.system)
@@ -388,30 +389,32 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                     cli_executable = cli_executable or selection.get("cli_executable")
                     api_base_url = api_base_url or selection.get("api_base_url")
                     api_key_file = api_key_file or selection.get("api_key_file")
-                    api_version = selection.get("api_version") or api_version
+                    api_version = api_version or selection.get("api_version")
                     input_cost = input_cost if input_cost is not None else selection.get("input_cost_per_mtok")
                     output_cost = output_cost if output_cost is not None else selection.get("output_cost_per_mtok")
                     max_task_cost = max_task_cost if max_task_cost is not None else selection.get("max_task_cost_usd")
+                    timeout = timeout if timeout is not None else selection.get("timeout")
                     hub.audit.append("model.selection-used", {"model_id": selection["model_id"], "adapter": adapter, "provider_model": model}, system_id=args.system)
             if not model:
                 raise AuthorizationRequired("verified orchestration requires an explicitly selected model: pass --model or configure one with `model select`")
             adapter = adapter or "codex-local"
+            timeout = timeout if timeout is not None else 300
             if modifier_row and model not in modifier_row["modifier"]["allowed_local_models"]:
                 raise PolicyDenied("selected local model is not allowed by the project modifier")
             if adapter in SUBSCRIPTION_ADAPTERS:
                 if not args.guided_plan:
                     raise PolicyDenied("subscription adapters support guided plans only")
-                subscription_config = SubscriptionCliConfig(adapter, cli_executable, model, args.timeout)
+                subscription_config = SubscriptionCliConfig(adapter, cli_executable, model, timeout)
                 worker = SubscriptionCliWorker(hub.database, hub.audit, hub.leases, subscription_config)
             elif adapter in HTTP_API_ADAPTERS:
                 if not args.guided_plan:
                     raise PolicyDenied("HTTP API adapters support guided plans only")
                 if not api_base_url or not api_key_file or input_cost is None or output_cost is None or max_task_cost is None:
                     raise AuthorizationRequired("HTTP API adapters require --api-base-url, --api-key-file, --input-cost-per-mtok, --output-cost-per-mtok, and --max-task-cost-usd (or a stored model selection carrying them)")
-                api_config = HttpApiConfig(adapter, api_base_url, model, api_key_file, input_cost, output_cost, max_task_cost, api_version=api_version, timeout=args.timeout)
+                api_config = HttpApiConfig(adapter, api_base_url, model, api_key_file, input_cost, output_cost, max_task_cost, api_version=api_version or DEFAULT_ANTHROPIC_VERSION, timeout=timeout)
                 worker = HttpApiWorker(hub.database, hub.audit, hub.leases, api_config, hub.provider_profiles)
             else:
-                config = LocalAdapterConfig(adapter, endpoint, model, args.timeout, executable=args.executable, http_bridge_executable=bridge)
+                config = LocalAdapterConfig(adapter, endpoint, model, timeout, executable=args.executable, http_bridge_executable=bridge)
                 worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
             worker.preflight()
         task = hub.tasks.create(args.system, args.request, classification, policy.policy_hash, args.task_id)

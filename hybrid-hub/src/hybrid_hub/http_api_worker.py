@@ -16,7 +16,7 @@ from .model_store import load_record, write_record
 from .secrets import read_api_key_file, redact_exact
 from .storage import Database
 from .util import bounded_text, sha256_bytes, sha256_json, utc_now
-from .workers import LocalWorker, _NoRedirect
+from .workers import FILE_STOP_MARKER, LocalWorker, _NoRedirect
 
 HTTP_API_ADAPTERS = frozenset({"anthropic-api", "openai-compatible-api"})
 # The single authoritative definitions of the two supported wire protocols.
@@ -28,7 +28,6 @@ ANTHROPIC_MESSAGES_PATH = "/v1/messages"
 OPENAI_CHAT_COMPLETIONS_PATH = "/chat/completions"
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 PROVIDER_IDENTITY = "vendor-api"
-STOP_MARKER = "<<END_FILE>>"
 
 
 def _http_post(opener: Any, url: str, headers: dict[str, str], body: bytes, timeout: int, limit: int) -> tuple[int, bytes]:
@@ -140,28 +139,32 @@ class HttpApiWorker:
         system_id = task["system_id"]
         self._authorize(system_id)
         cap = float(self.config.max_task_cost_usd)
-        spent = self._accumulated(system_id, task_id)
-        if spent >= cap:
-            raise PolicyDenied("per-task API spend cap is exhausted; escalation is a human decision")
         key = read_api_key_file(Path(self.config.api_key_file))
         prompt_bytes = prompt.encode("utf-8")
-        self.audit.append(
-            "worker.cloud-context-sent",
-            {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "prompt_sha256": sha256_bytes(prompt_bytes), "prompt_bytes": len(prompt_bytes)},
-            system_id=system_id, task_id=task_id,
-        )
-        with self.leases.held(f"http-api:{self.config.name}", task_id, ttl_seconds=self.config.timeout + 30):
+        # One task-wide spend lease covers read-check-egress-record, so
+        # concurrent calls (even through different API adapters) cannot both
+        # read a stale total and egress past the cap, and no call's cost can
+        # be overwritten by a last-writer-wins record update.
+        with self.leases.held(f"api-spend:{task_id}", task_id, ttl_seconds=self.config.timeout + 60):
+            spent = self._accumulated(system_id, task_id)
+            if spent >= cap:
+                raise PolicyDenied("per-task API spend cap is exhausted; escalation is a human decision")
+            self.audit.append(
+                "worker.cloud-context-sent",
+                {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "prompt_sha256": sha256_bytes(prompt_bytes), "prompt_bytes": len(prompt_bytes)},
+                system_id=system_id, task_id=task_id,
+            )
             text, input_tokens, output_tokens = self._generate(prompt, key)
-        call_cost = (input_tokens * float(self.config.input_cost_per_mtok) + output_tokens * float(self.config.output_cost_per_mtok)) / 1_000_000
-        spent = round(spent + call_cost, 8)
-        write_record(
-            self.database, self.audit, self._spend_key(system_id, task_id),
-            {"system_id": system_id, "task_id": task_id, "spent_usd": spent, "updated_at": utc_now()},
-            "worker.tokens-metered", system_id, self.config.name,
-            # The audit sanitizer redacts any key containing "token", so the
-            # metered counts are recorded as usage_input/usage_output.
-            {"task_id": task_id, "model": self.config.model, "usage_input": input_tokens, "usage_output": output_tokens, "call_cost_usd": round(call_cost, 8), "spent_usd": spent, "cap_usd": cap},
-        )
+            call_cost = (input_tokens * float(self.config.input_cost_per_mtok) + output_tokens * float(self.config.output_cost_per_mtok)) / 1_000_000
+            spent = round(spent + call_cost, 8)
+            write_record(
+                self.database, self.audit, self._spend_key(system_id, task_id),
+                {"system_id": system_id, "task_id": task_id, "spent_usd": spent, "updated_at": utc_now()},
+                "worker.tokens-metered", system_id, self.config.name,
+                # The audit sanitizer redacts any key containing "token", so the
+                # metered counts are recorded as usage_input/usage_output.
+                {"task_id": task_id, "model": self.config.model, "usage_input": input_tokens, "usage_output": output_tokens, "call_cost_usd": round(call_cost, 8), "spent_usd": spent, "cap_usd": cap},
+            )
         if spent > cap:
             raise PolicyDenied("per-task API spend cap was exceeded by the last call; ask the human before continuing")
         text = LocalWorker._clean_file_text(text)
@@ -208,11 +211,11 @@ class HttpApiWorker:
         if self.config.name == "anthropic-api":
             url = self.config.origin + ANTHROPIC_MESSAGES_PATH
             headers = {"Content-Type": "application/json", "Accept": "application/json", "x-api-key": key, "anthropic-version": self.config.api_version}
-            body: dict[str, Any] = {"model": self.config.model, "max_tokens": self.config.max_output_tokens, "temperature": 0, "stop_sequences": [STOP_MARKER], "messages": [{"role": "user", "content": prompt}]}
+            body: dict[str, Any] = {"model": self.config.model, "max_tokens": self.config.max_output_tokens, "temperature": 0, "stop_sequences": [FILE_STOP_MARKER], "messages": [{"role": "user", "content": prompt}]}
         else:
             url = self.config.base_url.rstrip("/") + OPENAI_CHAT_COMPLETIONS_PATH
             headers = {"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {key}"}
-            body = {"model": self.config.model, "max_tokens": self.config.max_output_tokens, "temperature": 0, "stop": [STOP_MARKER], "messages": [{"role": "user", "content": prompt}]}
+            body = {"model": self.config.model, "max_tokens": self.config.max_output_tokens, "temperature": 0, "stop": [FILE_STOP_MARKER], "messages": [{"role": "user", "content": prompt}]}
         payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
         limit = self.config.max_output_bytes * 4
         status, raw = _http_post(self.opener, url, headers, payload, self.config.timeout, limit)

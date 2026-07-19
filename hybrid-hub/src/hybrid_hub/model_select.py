@@ -241,7 +241,7 @@ def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_br
         return evidence_from_probe_state(result["task"]["state"])
 
 
-def _require_live_vendor_profile(database: Any, audit: Any, system_id: str, api_base_url: str | None) -> None:
+def _require_live_vendor_profile(database: Any, audit: Any, system_id: str, api_base_url: str | None, max_task_cost_usd: float | None) -> None:
     """API platforms are selectable only after the target system's vendor-api
     provider profile was separately approved with --enable-live. Checking
     before the probe keeps the live-egress authorization an explicit human
@@ -259,6 +259,8 @@ def _require_live_vendor_profile(database: Any, audit: Any, system_id: str, api_
         raise AuthorizationRequired("vendor API egress is not live-enabled for this system; approve the provider profile with --enable-live")
     if profile.endpoint != _https_origin(api_base_url):
         raise PolicyDenied("API base URL does not match the approved provider endpoint origin")
+    if max_task_cost_usd is None or float(max_task_cost_usd) > profile.max_cost_usd:
+        raise PolicyDenied("per-task spend cap is missing or exceeds the approved provider cost limit; the worker would refuse every run")
 
 
 def selected_transport(database: Any, audit: Any, system_id: str) -> dict[str, Any] | None:
@@ -307,7 +309,7 @@ def select_model(
     if adapter not in IMPLEMENTED_ADAPTERS:
         raise PolicyDenied(f"platform '{platform_id}' needs adapter '{adapter}' which is not implemented yet; choose an available platform")
     if adapter in HTTP_API_ADAPTERS:
-        _require_live_vendor_profile(database, audit, system_id, api_base_url)
+        _require_live_vendor_profile(database, audit, system_id, api_base_url, max_task_cost_usd)
     definition = ModelDefinition.from_dict(model["definition"])
     try:
         existing = models.registry.get(system_id, model_id)

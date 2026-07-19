@@ -16,6 +16,7 @@ from .quality import QualityRunner
 from .state import TaskManager
 from .storage import Database
 from .util import atomic_write, canonical_json, sha256_bytes, sha256_json, utc_now
+from .workers import FILE_STOP_MARKER
 
 
 Driver = Callable[[str, str, int, str], dict[str, Any]]
@@ -406,8 +407,8 @@ class Orchestrator:
                     lines.extend([f"SANITIZED {item['gate']} OUTPUT HASH={item['evidence_digest']}", item["output"], "END DIAGNOSTIC"])
             lines.extend([
                 f"The response must be real complete working source for {deliverable['path']}, not an example or placeholder.",
-                "RULES: Generate only the one requested file. Do not include secrets. Do not weaken or skip tests. Do not explain. End the file by writing <<END_FILE>> on its own line; the broker removes that marker.",
-                "NOW RETURN ONLY THE COMPLETE FILE CONTENT, THEN <<END_FILE>>.",
+                f"RULES: Generate only the one requested file. Do not include secrets. Do not weaken or skip tests. Do not explain. End the file by writing {FILE_STOP_MARKER} on its own line; the broker removes that marker.",
+                f"NOW RETURN ONLY THE COMPLETE FILE CONTENT, THEN {FILE_STOP_MARKER}.",
             ])
             return "\n".join(lines)
 

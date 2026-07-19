@@ -168,6 +168,15 @@ class SelectModelTests(RoutingFixture, unittest.TestCase):
             seen.append({"provider_model": provider_model, "adapter": adapter, **kwargs})
             return PASSING_EVIDENCE
 
+        with self.assertRaises(PolicyDenied):
+            select_model(
+                self.models, self.hub.database, self.hub.audit, "system-routing", self.catalog,
+                "anthropic-api", "claude-haiku-api", "owner", endpoint="http://127.0.0.1:11434",
+                http_bridge_executable=None, timeout=60, probe=probe,
+                api_base_url="https://api.synthetic.test", api_key_file="/synthetic/api.key",
+                input_cost_per_mtok=1.0, output_cost_per_mtok=5.0, max_task_cost_usd=2.0,
+            )
+        self.assertEqual(seen, [])
         result = select_model(
             self.models, self.hub.database, self.hub.audit, "system-routing", self.catalog,
             "anthropic-api", "claude-haiku-api", "owner", endpoint="http://127.0.0.1:11434",
