@@ -40,3 +40,12 @@ venv/
 Thumbs.db
 *.swp
 *.tmp
+
+# Private master dossier (never public; see release-preparation notes)
+PROJECT-DOSSIER.md
+
+# Generated per-project integration wrappers (created by `hub integrations install`)
+hybrid-hub/.hybrid-hub.json
+hybrid-hub/.agents/
+hybrid-hub/.claude/
+hybrid-hub/.vscode/
