@@ -187,10 +187,15 @@ class LocalWorker:
         clean = ANSI_ESCAPE.sub("", text).strip()
         if "<<END_FILE>>" in clean:
             clean = clean.split("<<END_FILE>>", 1)[0].rstrip()
-        if clean.startswith("```"):
-            lines = clean.splitlines()
-            if len(lines) >= 3 and lines[-1].strip() == "```":
-                clean = "\n".join(lines[1:-1]).strip()
+        lines = clean.splitlines()
+        # The stop sequence can cut generation while the model is still inside
+        # a markdown fence, so a leading fence line is stripped even when the
+        # closing fence never arrived.
+        if lines and re.fullmatch(r"```[\w+.-]*", lines[0].strip()):
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            clean = "\n".join(lines).strip()
         return clean + "\n" if clean else ""
 
     def _process(self, arguments: list[str]) -> str:

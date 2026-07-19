@@ -210,6 +210,14 @@ class LocalWorkerTests(IntegrationBase):
         self.assertEqual(payload["options"]["num_predict"], 2048)
         self.assertEqual(payload["options"]["stop"], ["<<END_FILE>>"])
 
+    def test_file_worker_strips_unclosed_fence_when_stop_lands_inside_it(self):
+        # Observed with qwen2.5-coder: the model emits the stop marker before
+        # closing its markdown fence, so the response ends with no ``` line.
+        with patch("pathlib.Path.is_file", return_value=True), patch.object(LocalWorker, "_bridge_request", return_value={"response": "```python\ndef ready():\n    return True\n", "done": True, "done_reason": "stop"}):
+            worker = LocalWorker(self.hub.database, self.hub.audit, self.hub.leases, LocalAdapterConfig("codex-local", "http://127.0.0.1:11434", "gemma3:1b", http_bridge_executable="/bin/curl"))
+            result = worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+        self.assertEqual(result["result"]["content"], "def ready():\n    return True\n")
+
     def test_file_worker_rejects_output_limit_and_cli_transport(self):
         with patch("pathlib.Path.is_file", return_value=True), patch.object(LocalWorker, "_bridge_request", return_value={"response": "partial", "done": False}):
             worker = LocalWorker(self.hub.database, self.hub.audit, self.hub.leases, LocalAdapterConfig("codex-local", "http://127.0.0.1:11434", "gemma3:1b", http_bridge_executable="/bin/curl"))
