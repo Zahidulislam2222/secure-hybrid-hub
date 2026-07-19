@@ -21,6 +21,7 @@ htmlcov/
 venv/
 
 # Credentials, local overrides, and sensitive artifacts
+CREDENTIALS.md
 .env
 .env.*
 !.env.example
