@@ -52,6 +52,7 @@ def handle(args: Any) -> Any:
         return select_model(
             models, hub.database, hub.audit, args.system_id, catalog, platform_id, model_id, args.actor,
             endpoint=args.endpoint, http_bridge_executable=args.http_bridge_executable, timeout=args.timeout,
+            cli_executable=args.cli_executable,
         )
     if action == "route":
         return models.router.plan(args.system_id, args.role, args.classification, require_structured_output=not args.allow_unstructured)

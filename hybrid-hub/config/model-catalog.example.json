@@ -60,7 +60,7 @@
       "label": "Claude Code subscription (headless claude -p)",
       "adapter": "claude-subscription-cli",
       "notes": [
-        "Not yet available: the subscription-CLI adapter is a later build phase.",
+        "Runs headless 'claude -p' with tools disallowed; requires the claude CLI installed and logged in. Pass --cli-executable with its absolute path.",
         "Shares the Claude Max 5-hour quota with an interactive Claude Code supervisor session."
       ],
       "models": [
@@ -109,13 +109,13 @@
       "label": "OpenAI Codex subscription (headless codex exec)",
       "adapter": "codex-subscription-cli",
       "notes": [
-        "Not yet available: the subscription-CLI adapter is a later build phase.",
-        "Does not share the Claude quota; edit the model entry to the model your Codex subscription exposes."
+        "Runs headless 'codex exec' in a read-only sandbox; requires the codex CLI installed and logged in. Pass --cli-executable with its absolute path.",
+        "Does not share the Claude quota; provider_model 'default' uses the model your Codex subscription is configured with."
       ],
       "models": [
         {
           "model_id": "codex-default-model",
-          "provider_model": "codex-default",
+          "provider_model": "default",
           "label": "Codex default model (edit to your installed model)",
           "definition": {
             "model_id": "codex-default-model",

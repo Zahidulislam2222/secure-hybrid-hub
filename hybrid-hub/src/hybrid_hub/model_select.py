@@ -15,7 +15,8 @@ from .util import bounded_text, require_id, utc_now
 # Adapters with a working execution transport in this build. Platforms whose
 # adapter is not listed here are shown but refuse selection until their
 # adapter phase ships.
-IMPLEMENTED_ADAPTERS = frozenset({"codex-local", "claude-local"})
+IMPLEMENTED_ADAPTERS = frozenset({"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli"})
+SUBSCRIPTION_CLI_ADAPTERS = frozenset({"claude-subscription-cli", "codex-subscription-cli"})
 CATALOG_SCHEMA_VERSION = "1.0.0"
 PROBE_SYSTEM = "model-probe"
 PROBE_REPO = f"{PROBE_SYSTEM}-repo-1"
@@ -158,7 +159,7 @@ def _probe_plan() -> dict[str, Any]:
     }
 
 
-def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_bridge_executable: str | None, timeout: int) -> dict[str, Any]:
+def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_bridge_executable: str | None, timeout: int, cli_executable: str | None = None) -> dict[str, Any]:
     """Real one-packet synthetic evaluation in a throwaway runtime. The counts
     recorded as evaluation evidence come from an actual guided run, never from
     catalog claims or model confidence."""
@@ -194,10 +195,16 @@ def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_br
         arguments = [
             "run", "Synthetic model evaluation probe", "--system", PROBE_SYSTEM, "--through", "verified",
             "--guided-plan", str(plan_file), "--supervisor-source", "human-approved",
-            "--adapter", adapter, "--model", provider_model, "--endpoint", endpoint, "--timeout", str(timeout),
+            "--adapter", adapter, "--model", provider_model, "--timeout", str(timeout),
         ]
-        if http_bridge_executable:
-            arguments += ["--http-bridge-executable", http_bridge_executable]
+        if adapter in SUBSCRIPTION_CLI_ADAPTERS:
+            if not cli_executable:
+                raise ValidationError("subscription platforms require --cli-executable for the evaluation probe")
+            arguments += ["--cli-executable", cli_executable]
+        else:
+            arguments += ["--endpoint", endpoint]
+            if http_bridge_executable:
+                arguments += ["--http-bridge-executable", http_bridge_executable]
         result = invoke(*arguments, seconds=timeout * 3 + 120)
         return evidence_from_probe_state(result["task"]["state"])
 
@@ -215,6 +222,7 @@ def select_model(
     endpoint: str,
     http_bridge_executable: str | None,
     timeout: int,
+    cli_executable: str | None = None,
     probe: Callable[..., dict[str, Any]] = run_local_probe,
 ) -> dict[str, Any]:
     require_id(actor, "actor")
@@ -231,7 +239,7 @@ def select_model(
     if existing is None or existing.get("status") != "approved":
         if existing is None:
             models.registry.discover(system_id, model["definition"], actor)
-        evidence = probe(model["provider_model"], adapter, endpoint=endpoint, http_bridge_executable=http_bridge_executable, timeout=timeout)
+        evidence = probe(model["provider_model"], adapter, endpoint=endpoint, http_bridge_executable=http_bridge_executable, timeout=timeout, cli_executable=cli_executable)
         probed = True
         models.registry.record_evaluation(system_id, model_id, evidence, actor)
         models.registry.approve(system_id, model_id, actor)
@@ -255,6 +263,7 @@ def select_model(
         "adapter": adapter,
         "endpoint": endpoint,
         "http_bridge_executable": http_bridge_executable,
+        "cli_executable": cli_executable,
         "timeout": timeout,
         "updated_at": utc_now(),
     }

@@ -65,10 +65,34 @@ a throwaway runtime and records that result — never catalog claims — as the
 model's evaluation. A passing probe approves the model and pins the
 project's routing policy to exactly that choice with `max_attempts` 1: no
 automatic escalation and no automatic fallback; a defeated or unreachable
-model blocks cleanly and waits for a human decision. Platforms whose
-adapter is not implemented yet (subscription CLIs, vendor HTTP APIs) are
-listed for the roadmap but fail closed when selected. Re-run `model select`
-at any time to change the choice.
+model blocks cleanly and waits for a human decision. Vendor HTTP API
+platforms are listed for the roadmap but fail closed when selected.
+Re-run `model select` at any time to change the choice.
+
+### Subscription-CLI coding workers
+
+Guided runs can use a logged-in Claude Code or Codex subscription CLI as
+the coding worker instead of local Ollama:
+
+```bash
+python3 hub.py --runtime /protected/hub-runtime run "..." \
+  --system my-system --through verified --guided-plan .../plan.json \
+  --supervisor-source claude-interactive \
+  --adapter claude-subscription-cli --model haiku \
+  --cli-executable /absolute/path/to/claude
+```
+
+(`codex-subscription-cli` with `--model default` uses the model the Codex
+subscription is configured with.) The worker is text-only generation:
+headless `claude -p` with tools disallowed, or `codex exec` in a read-only
+sandbox, running in an empty scratch directory with a scrubbed environment
+that never inherits provider API keys — so usage stays on the subscription,
+never metered API billing. Unlike local workers this transport sends the
+bounded packet context to the vendor; every outbound prompt is
+audit-logged with its SHA-256 and byte count before the call, and
+subscription adapters accept guided plans only. A Claude-CLI worker shares
+the Claude subscription usage window with an interactive Claude Code
+supervisor session; Codex does not.
 
 ## One-command guided local implementation
 

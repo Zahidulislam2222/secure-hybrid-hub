@@ -10,6 +10,7 @@ from .errors import AuthorizationRequired, HubError, PolicyDenied, ValidationErr
 from .hub import Hub
 from .policy import RANK, compose
 from .topology import Topology
+from .subscription_worker import SUBSCRIPTION_ADAPTERS, SubscriptionCliConfig, SubscriptionCliWorker
 from .workers import LocalAdapterConfig, LocalWorker
 
 
@@ -75,7 +76,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--create-workspaces", action="store_true")
     run.add_argument("--repo", action="append", default=[])
     run.add_argument("--through", choices=["scoped", "local-ready", "verified"], default="local-ready")
-    run.add_argument("--adapter", choices=["codex-local", "claude-local"], default="codex-local")
+    run.add_argument("--adapter", choices=["codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli"], default="codex-local")
+    run.add_argument("--cli-executable", help="absolute claude/codex executable path for subscription adapters")
     run.add_argument("--endpoint", default="http://127.0.0.1:11434")
     run.add_argument("--model")
     run.add_argument("--timeout", type=int, default=300)
@@ -367,8 +369,14 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                 raise AuthorizationRequired("verified orchestration requires an explicitly selected installed local model")
             if modifier_row and args.model not in modifier_row["modifier"]["allowed_local_models"]:
                 raise PolicyDenied("selected local model is not allowed by the project modifier")
-            config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable, http_bridge_executable=args.http_bridge_executable)
-            worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
+            if args.adapter in SUBSCRIPTION_ADAPTERS:
+                if not args.guided_plan:
+                    raise PolicyDenied("subscription adapters support guided plans only")
+                subscription_config = SubscriptionCliConfig(args.adapter, args.cli_executable, args.model, args.timeout)
+                worker = SubscriptionCliWorker(hub.database, hub.audit, hub.leases, subscription_config)
+            else:
+                config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable, http_bridge_executable=args.http_bridge_executable)
+                worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
             worker.preflight()
         task = hub.tasks.create(args.system, args.request, classification, policy.policy_hash, args.task_id)
         if modifier_row:

@@ -123,11 +123,18 @@ class SelectModelTests(RoutingFixture, unittest.TestCase):
             self.models.policies.active("system-routing")
 
     def test_unimplemented_platform_fails_closed_without_probe(self):
-        for platform, model in (("claude-subscription", "claude-haiku"), ("codex-subscription", "codex-default-model"), ("vendor-api", "vendor-api-model")):
-            with self.assertRaises(PolicyDenied):
-                self.select(PASSING_EVIDENCE, platform=platform, model=model)
+        with self.assertRaises(PolicyDenied):
+            self.select(PASSING_EVIDENCE, platform="vendor-api", model="vendor-api-model")
         with self.assertRaises(ValidationError):
             self.models.policies.active("system-routing")
+
+    def test_subscription_platform_selects_with_cloud_policy(self):
+        result, calls = self.select(PASSING_EVIDENCE, platform="claude-subscription", model="claude-haiku")
+        self.assertEqual(calls, [("haiku", "claude-subscription-cli")])
+        policy = result["policy"]
+        self.assertTrue(policy["allow_cloud"])
+        self.assertEqual(policy["allowed_cloud_account_profiles"], ["claude-subscription"])
+        self.assertEqual(policy["pinned_model_id"], "claude-haiku")
 
     def test_unknown_platform_or_model_is_rejected(self):
         with self.assertRaises(ValidationError):

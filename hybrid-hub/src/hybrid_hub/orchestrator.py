@@ -39,7 +39,7 @@ class ImplementationApplier:
         self.dossier = dossier
 
     def apply(self, task_id: str, adapter: str, attempt: int, request_hash: str, result: dict[str, Any], *, allowed_scope: dict[str, list[str]] | None = None, exact_scope: bool = False) -> dict[str, Any]:
-        if adapter not in {"codex-local", "claude-local", "synthetic-acceptance"}:
+        if adapter not in {"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli", "synthetic-acceptance"}:
             raise ValidationError("implementation adapter identity is invalid")
         if result.get("status") not in {"ok", "blocked", "failed"}:
             raise AdapterError("implementation status is invalid")
