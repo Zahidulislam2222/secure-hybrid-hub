@@ -11,9 +11,13 @@ def _model_command(arguments: list[str]) -> bool:
     return index < len(arguments) and arguments[index] == "model"
 
 
-if _model_command(sys.argv[1:]):
-    from hybrid_hub.model_cli import main
-else:
-    from hybrid_hub.cli import main
+try:
+    if _model_command(sys.argv[1:]):
+        from hybrid_hub.model_cli import main
+    else:
+        from hybrid_hub.cli import main
+except ImportError as error:
+    print(f"hub: {error}", file=sys.stderr)
+    raise SystemExit(1)
 
 raise SystemExit(main())

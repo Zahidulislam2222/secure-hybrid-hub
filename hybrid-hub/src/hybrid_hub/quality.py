@@ -257,10 +257,14 @@ class QualityRunner:
         return {**summary, "evidence_digest": evidence_digest}
 
     def latest(self, task_id: str, scope: str | None = None) -> dict[str, Any]:
-        clause = "AND scope=?" if scope else ""
-        values: tuple[Any, ...] = (task_id, scope) if scope else (task_id,)
+        if scope:
+            query = "SELECT * FROM quality_runs WHERE task_id=? AND scope=? ORDER BY created_at DESC LIMIT 1"
+            values: tuple[Any, ...] = (task_id, scope)
+        else:
+            query = "SELECT * FROM quality_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1"
+            values = (task_id,)
         with self.database.connect() as connection:
-            row = connection.execute(f"SELECT * FROM quality_runs WHERE task_id=? {clause} ORDER BY created_at DESC LIMIT 1", values).fetchone()
+            row = connection.execute(query, values).fetchone()
         if not row:
             raise ValidationError("quality evidence unavailable")
         return {**json.loads(row["summary_json"]), "evidence_digest": row["evidence_digest"]}

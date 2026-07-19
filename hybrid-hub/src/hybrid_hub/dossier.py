@@ -40,9 +40,13 @@ class DossierStore:
             self.audit.append("dossier.approved", {"version": version, "approver": approver}, system_id=system_id, connection=connection)
 
     def current(self, system_id: str, approved_only: bool = True) -> dict[str, Any]:
-        clause = "AND approved=1" if approved_only else ""
+        query = (
+            "SELECT * FROM dossier_versions WHERE system_id=? AND approved=1 ORDER BY version DESC LIMIT 1"
+            if approved_only
+            else "SELECT * FROM dossier_versions WHERE system_id=? ORDER BY version DESC LIMIT 1"
+        )
         with self.database.connect() as connection:
-            row = connection.execute(f"SELECT * FROM dossier_versions WHERE system_id=? {clause} ORDER BY version DESC LIMIT 1", (system_id,)).fetchone()
+            row = connection.execute(query, (system_id,)).fetchone()
         if not row:
             raise ValidationError("approved dossier unavailable" if approved_only else "dossier unavailable")
         return {"system_id": system_id, "version": row["version"], "approved": bool(row["approved"]), "hash": row["dossier_hash"], "payload": json.loads(row["payload_json"]), "created_at": row["created_at"]}

@@ -30,8 +30,7 @@ class WorkspaceManager:
                 raise ValidationError("unknown task")
             if not task["approved"]:
                 raise ValidationError("system is disabled")
-            placeholders = ",".join("?" for _ in repo_ids)
-            rows = connection.execute(f"SELECT * FROM repositories WHERE repo_id IN ({placeholders})", repo_ids).fetchall()
+            rows = connection.execute("SELECT * FROM repositories WHERE repo_id IN (SELECT value FROM json_each(?))", (json.dumps(list(repo_ids)),)).fetchall()
         if len(rows) != len(set(repo_ids)):
             raise ValidationError("unknown repository")
         if any(row["system_id"] != task["system_id"] for row in rows):

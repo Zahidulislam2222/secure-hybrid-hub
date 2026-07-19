@@ -246,9 +246,8 @@ class ResearchManager:
         tokens = sorted(set(TOKEN.findall(query.lower())))[:32]
         if not tokens:
             raise ValidationError("research query has no indexable terms")
-        placeholders = ",".join("?" for _ in tokens)
         with self.database.connect() as connection:
-            rows = connection.execute(f"SELECT evidence_id,COUNT(*) AS score FROM research_index WHERE system_id=? AND token IN ({placeholders}) GROUP BY evidence_id ORDER BY score DESC,evidence_id LIMIT ?", (task["system_id"], *tokens, limit)).fetchall()
+            rows = connection.execute("SELECT evidence_id,COUNT(*) AS score FROM research_index WHERE system_id=? AND token IN (SELECT value FROM json_each(?)) GROUP BY evidence_id ORDER BY score DESC,evidence_id LIMIT ?", (task["system_id"], json.dumps(tokens), limit)).fetchall()
             evidence = [connection.execute("SELECT * FROM research_evidence WHERE evidence_id=? AND system_id=?", (row["evidence_id"], task["system_id"])).fetchone() for row in rows]
         results = []
         for row in evidence:

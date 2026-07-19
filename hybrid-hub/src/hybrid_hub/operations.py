@@ -17,6 +17,11 @@ from .storage import Database
 from .util import atomic_write, canonical_json, require_id, sha256_bytes, sha256_json, utc_now
 
 
+# Broker-owned state, VCS internals, and dependency/cache trees hold no
+# authorable dependency manifests and may contain tens of thousands of files.
+SBOM_PRUNED_DIRECTORIES = frozenset({".git", "runtime", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".ruff_cache", ".pytest_cache"})
+
+
 class OperationsManager:
     """Local operational hardening without third-party telemetry or services."""
 
@@ -28,14 +33,17 @@ class OperationsManager:
         root = source_root.resolve(strict=True)
         manifests = []
         names = {"pyproject.toml", "requirements.txt", "requirements.lock", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle", "build.gradle.kts"}
-        for path in sorted(root.rglob("*")):
-            if path.is_symlink() or not path.is_file() or ".git" in path.parts:
+        candidates = []
+        for current, directories, files in os.walk(root):
+            directories[:] = sorted(name for name in directories if name not in SBOM_PRUNED_DIRECTORIES)
+            candidates.extend(Path(current) / name for name in files if name in names)
+        for path in sorted(candidates):
+            if path.is_symlink() or not path.is_file():
                 continue
-            if path.name in names:
-                raw = path.read_bytes()
-                if len(raw) > 8_388_608:
-                    raise PolicyDenied("dependency manifest exceeds SBOM limit")
-                manifests.append({"path": path.relative_to(root).as_posix(), "sha256": sha256_bytes(raw), "size": len(raw)})
+            raw = path.read_bytes()
+            if len(raw) > 8_388_608:
+                raise PolicyDenied("dependency manifest exceeds SBOM limit")
+            manifests.append({"path": path.relative_to(root).as_posix(), "sha256": sha256_bytes(raw), "size": len(raw)})
         payload = {"schema": "CycloneDX-like-local-1.0", "source_root_hash": sha256_bytes(str(root).encode()), "manifests": manifests, "dependency_resolution": "offline-manifest-inventory", "licence_status": "requires resolved dependency metadata review", "generated_at": utc_now(), "network_calls": 0}
         payload["sbom_hash"] = sha256_json(payload)
         destination = self.database.layout.operations / f"sbom-{payload['sbom_hash'][:16]}.json"
