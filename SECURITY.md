@@ -16,10 +16,8 @@ security vulnerabilities, not ordinary bugs.
 
 Please do **not** open a public issue for a vulnerability.
 
-- Preferred: use GitHub's private vulnerability reporting
-  ("Security" tab → "Report a vulnerability") on this repository.
-- Alternative: email `muhammadzahidulislam2222@gmail.com` with subject
-  `[SECURITY] secure-hybrid-hub`.
+Use GitHub's private vulnerability reporting
+("Security" tab → "Report a vulnerability") on this repository.
 
 Include the affected version or commit, a reproduction (a failing test or
 exact CLI sequence is ideal), and the impact — which control is bypassed and
