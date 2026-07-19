@@ -1,0 +1,62 @@
+# Security CI template — copy to <repo>/.github/workflows/security.yml
+# Layer 5: the backstop that blocks the branch for anything that slipped
+# past the agent hooks and pre-commit.
+#
+# Everything below runs on GitHub's free tier for public AND private repos.
+# NOTE on the optional Claude review job at the bottom: it needs an
+# ANTHROPIC_API_KEY secret, and API usage is PAID (billed per token, separate
+# from the Claude Max plan). It ships commented out on purpose — prefer running
+# /security-review inside Claude Code (covered by the plan) before merging.
+
+name: security
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so gitleaks scans every commit
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # httpsconnection-detected is excluded: it fires on any use of
+      # http.client.HTTPSConnection and concerns Python < 3.4.3 defaults.
+      # research_worker.py uses ssl.create_default_context() (certificate and
+      # hostname verification on) with pinned public IPs; this project
+      # requires Python >= 3.11.
+      - run: >-
+          pipx run semgrep scan --error --config p/security-audit --metrics=off
+          --exclude-rule python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
+
+  bandit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run bandit -q -ll -r .
+        # Remove this job for non-Python repos.
+
+  # OPTIONAL — LLM security review of PR diffs (contextual issues SAST misses:
+  # missing auth checks, logic flaws). Uncomment only after adding the
+  # ANTHROPIC_API_KEY repo secret. PAID API usage — see note at top.
+  #
+  # claude-security-review:
+  #   if: github.event_name == 'pull_request'
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     pull-requests: write
+  #     contents: read
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: anthropics/claude-code-security-review@main
+  #       with:
+  #         claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
