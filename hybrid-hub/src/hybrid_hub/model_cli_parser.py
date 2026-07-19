@@ -49,6 +49,16 @@ def parser() -> argparse.ArgumentParser:
     policy_show = actions.add_parser("policy-show")
     policy_show.add_argument("system_id")
 
+    select = actions.add_parser("select")
+    select.add_argument("system_id")
+    select.add_argument("--catalog", type=Path, required=True)
+    select.add_argument("--platform")
+    select.add_argument("--model")
+    select.add_argument("--actor", required=True)
+    select.add_argument("--endpoint", default="http://127.0.0.1:11434")
+    select.add_argument("--http-bridge-executable", help="absolute local curl/curl.exe path for bounded loopback Ollama HTTP")
+    select.add_argument("--timeout", type=int, default=300)
+
     route = actions.add_parser("route")
     route.add_argument("system_id")
     route.add_argument("--role", required=True)

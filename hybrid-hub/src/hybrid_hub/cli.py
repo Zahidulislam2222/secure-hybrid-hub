@@ -318,6 +318,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
             discovery = hub.registry.discover(args.id)
             registration["discovery"] = discovery
             registration["dossier_draft_version"] = hub.dossier.create_draft(args.id, _dossier_seed(registration, args.purpose, discovery))
+            registration["coding_model"] = f"not chosen yet — run: hub.py model select {args.id} --catalog config/model-catalog.example.json --actor OWNER (interactive when --platform/--model are omitted)"
             return registration
         if args.system_command == "discover":
             return hub.registry.discover(args.system_id)

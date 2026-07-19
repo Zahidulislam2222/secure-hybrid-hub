@@ -1,0 +1,168 @@
+{
+  "schema_version": "1.0.0",
+  "notes": [
+    "Copy this file and edit it to match the models actually installed or subscribed on this machine.",
+    "benchmark_success_rate values are conservative placeholders; selection runs a REAL synthetic probe and records its result as the evaluation, so routing never trusts these numbers alone.",
+    "Platforms whose adapter is not implemented yet are listed for the roadmap; selecting them fails closed until their adapter ships."
+  ],
+  "platforms": [
+    {
+      "platform_id": "local-ollama",
+      "label": "Local Ollama (free, private, offline)",
+      "adapter": "claude-local",
+      "notes": [
+        "Free and private; the weakest tier for complex packets.",
+        "From WSL with Windows Ollama, pass --http-bridge-executable /mnt/c/Windows/System32/curl.exe."
+      ],
+      "models": [
+        {
+          "model_id": "qwen2-5-coder-7b",
+          "provider_model": "qwen2.5-coder:7b",
+          "label": "Qwen 2.5 Coder 7B",
+          "definition": {
+            "model_id": "qwen2-5-coder-7b",
+            "provider": "ollama",
+            "adapter": "claude-local",
+            "location": "local",
+            "account_profile": null,
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1", "R2", "R3", "R4"],
+            "retention_days": 0,
+            "regions": ["local"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0,
+            "benchmark_success_rate": 0.5
+          }
+        },
+        {
+          "model_id": "gemma3-1b",
+          "provider_model": "gemma3:1b",
+          "label": "Gemma 3 1B",
+          "definition": {
+            "model_id": "gemma3-1b",
+            "provider": "ollama",
+            "adapter": "claude-local",
+            "location": "local",
+            "account_profile": null,
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1", "R2", "R3", "R4"],
+            "retention_days": 0,
+            "regions": ["local"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0,
+            "benchmark_success_rate": 0.25
+          }
+        }
+      ]
+    },
+    {
+      "platform_id": "claude-subscription",
+      "label": "Claude Code subscription (headless claude -p)",
+      "adapter": "claude-subscription-cli",
+      "notes": [
+        "Not yet available: the subscription-CLI adapter is a later build phase.",
+        "Shares the Claude Max 5-hour quota with an interactive Claude Code supervisor session."
+      ],
+      "models": [
+        {
+          "model_id": "claude-haiku",
+          "provider_model": "haiku",
+          "label": "Claude Haiku (low quota use; the workhorse tier)",
+          "definition": {
+            "model_id": "claude-haiku",
+            "provider": "anthropic",
+            "adapter": "claude-subscription-cli",
+            "location": "cloud",
+            "account_profile": "claude-subscription",
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1", "R2"],
+            "retention_days": 30,
+            "regions": ["vendor-managed"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0,
+            "benchmark_success_rate": 0.5
+          }
+        },
+        {
+          "model_id": "claude-opus",
+          "provider_model": "opus",
+          "label": "Claude Opus (strong; heavy quota per request)",
+          "definition": {
+            "model_id": "claude-opus",
+            "provider": "anthropic",
+            "adapter": "claude-subscription-cli",
+            "location": "cloud",
+            "account_profile": "claude-subscription",
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1", "R2"],
+            "retention_days": 30,
+            "regions": ["vendor-managed"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0,
+            "benchmark_success_rate": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "platform_id": "codex-subscription",
+      "label": "OpenAI Codex subscription (headless codex exec)",
+      "adapter": "codex-subscription-cli",
+      "notes": [
+        "Not yet available: the subscription-CLI adapter is a later build phase.",
+        "Does not share the Claude quota; edit the model entry to the model your Codex subscription exposes."
+      ],
+      "models": [
+        {
+          "model_id": "codex-default-model",
+          "provider_model": "codex-default",
+          "label": "Codex default model (edit to your installed model)",
+          "definition": {
+            "model_id": "codex-default-model",
+            "provider": "openai",
+            "adapter": "codex-subscription-cli",
+            "location": "cloud",
+            "account_profile": "codex-subscription",
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1", "R2"],
+            "retention_days": 30,
+            "regions": ["vendor-managed"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0,
+            "benchmark_success_rate": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "platform_id": "vendor-api",
+      "label": "Vendor HTTP APIs (per-token cost; requires approved credentials)",
+      "adapter": "openai-compatible-api",
+      "notes": [
+        "Not yet available: the HTTP API adapter and credential backend are a later build phase behind an explicit cost approval.",
+        "Sending client code to a third-party API is a per-project policy decision; regulated projects should stay local."
+      ],
+      "models": [
+        {
+          "model_id": "vendor-api-model",
+          "provider_model": "edit-to-vendor-model-name",
+          "label": "Example API model (edit provider_model and cost before use)",
+          "definition": {
+            "model_id": "vendor-api-model",
+            "provider": "vendor",
+            "adapter": "openai-compatible-api",
+            "location": "cloud",
+            "account_profile": "vendor-api",
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1"],
+            "retention_days": 30,
+            "regions": ["vendor-managed"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0.05,
+            "benchmark_success_rate": 0.5
+          }
+        }
+      ]
+    }
+  ]
+}

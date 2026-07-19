@@ -46,6 +46,30 @@ This adds project-local skills, merges Hub tasks into `.vscode/tasks.json`, and
 creates `.hybrid-hub.json`. It does not create `AGENTS.md` or `CLAUDE.md` and
 does not modify user-global settings.
 
+## Choose the coding model at project start
+
+The coding worker is chosen per project — platform first, then the exact
+model on it. The catalog is data, not code: copy
+`config/model-catalog.example.json` and edit it to the models actually
+installed or subscribed on the machine. Run interactively (omit
+`--platform`/`--model` to get a menu):
+
+```bash
+python3 hub.py --runtime /protected/hub-runtime model select my-system \
+  --catalog config/model-catalog.example.json --actor OWNER \
+  --http-bridge-executable /mnt/c/Windows/System32/curl.exe
+```
+
+Selection runs a real one-packet synthetic probe against the chosen model in
+a throwaway runtime and records that result — never catalog claims — as the
+model's evaluation. A passing probe approves the model and pins the
+project's routing policy to exactly that choice with `max_attempts` 1: no
+automatic escalation and no automatic fallback; a defeated or unreachable
+model blocks cleanly and waits for a human decision. Platforms whose
+adapter is not implemented yet (subscription CLIs, vendor HTTP APIs) are
+listed for the roadmap but fail closed when selected. Re-run `model select`
+at any time to change the choice.
+
 ## One-command guided local implementation
 
 The recommended path is high-model decomposition plus isolated research and

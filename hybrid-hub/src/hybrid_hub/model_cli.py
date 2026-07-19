@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from .errors import HubError, ValidationError
 from .hub import Hub
 from .model_cli_parser import parser
 from .model_runtime import ModelRuntime
+from .model_select import interactive_choice, load_catalog, select_model
 
 
 def read_object(path: Path, label: str) -> dict[str, Any]:
@@ -40,6 +42,17 @@ def handle(args: Any) -> Any:
         return models.policies.approve(args.system_id, args.actor)
     if action == "policy-show":
         return models.policies.active(args.system_id).as_dict()
+    if action == "select":
+        catalog = load_catalog(args.catalog)
+        platform_id, model_id = args.platform, args.model
+        if platform_id is None or model_id is None:
+            if not sys.stdin.isatty():
+                raise ValidationError("provide --platform and --model, or run interactively")
+            platform_id, model_id = interactive_choice(catalog, input, lambda line: print(line, file=sys.stderr))
+        return select_model(
+            models, hub.database, hub.audit, args.system_id, catalog, platform_id, model_id, args.actor,
+            endpoint=args.endpoint, http_bridge_executable=args.http_bridge_executable, timeout=args.timeout,
+        )
     if action == "route":
         return models.router.plan(args.system_id, args.role, args.classification, require_structured_output=not args.allow_unstructured)
     raise ValidationError("unknown model action")
