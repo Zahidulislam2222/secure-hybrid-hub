@@ -86,6 +86,10 @@ Immutable dossier checkpoints are under
 
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 
+## Author
+
+Zahidul Islam ([@Zahidulislam2222](https://github.com/Zahidulislam2222))
+
 ## License
 
 [Apache-2.0](LICENSE)
