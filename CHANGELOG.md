@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-project coding-model selection (`model select`): the developer
+  chooses the coding platform and model at project start — interactively
+  or via flags — from a data-driven catalog
+  (`config/model-catalog.example.json`). Selection runs a real one-packet
+  synthetic probe against the chosen model, records the probe result as
+  the model's evaluation, and pins the project routing policy to the
+  choice with no automatic escalation or fallback.
+- Subscription-CLI coding workers: guided packets can be implemented by a
+  logged-in Claude Code (`claude -p`, tools disallowed) or Codex
+  (`codex exec`, read-only sandbox) subscription CLI, running in an empty
+  scratch directory with an environment allowlist that never inherits
+  provider API keys. Every outbound prompt is audit-logged with its
+  SHA-256 and byte count before the call. Vendor HTTP API platforms remain
+  fail-closed.
+- Flagless guided runs: `run --through verified` without `--model` uses
+  the project's pinned selection and stored transport, audited as
+  `model.selection-used`.
+
+### Fixed
+
+- Local file workers now strip an unclosed leading markdown fence when the
+  model emits the stop marker before closing its code fence (observed with
+  qwen2.5-coder), instead of failing the parse gate on every retry.
+
 ## [0.9.0] - 2026-07-19
 
 First public release of the Secure Hybrid AI Development Hub: a fail-closed,
