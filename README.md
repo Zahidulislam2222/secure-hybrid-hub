@@ -56,12 +56,6 @@ for the exact remaining risks.
 
 ## Documentation
 
-- [Final build plan](docs/FINAL_BUILD_PLAN.md) — authoritative implementation specification
-- [Research and architecture](docs/RESEARCH_AND_ARCHITECTURE.md)
-- [Regulated-client security profile](docs/REGULATED_CLIENT_PROFILE.md)
-- [Automation and local-search design](docs/AUTOMATION_AND_LOCAL_SEARCH.md)
-- [Implementation roadmap](docs/IMPLEMENTATION_ROADMAP.md)
-- [Decision log](docs/DECISION_LOG.md)
 - [Implemented hub](hybrid-hub/README.md)
 - [Guided orchestration](hybrid-hub/docs/GUIDED_ORCHESTRATION.md)
 - [Model routing operations](hybrid-hub/docs/MODEL_ROUTING_OPERATIONS.md)

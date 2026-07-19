@@ -45,6 +45,11 @@ Thumbs.db
 # Private master dossier (never public; see release-preparation notes)
 PROJECT-DOSSIER.md
 
+# Internal build/design docs and workspace agent rules (local only)
+/docs/
+/CLAUDE.md
+/AGENTS.md
+
 # Generated per-project integration wrappers (created by `hub integrations install`)
 hybrid-hub/.hybrid-hub.json
 hybrid-hub/.agents/

@@ -1,7 +1,7 @@
 # Secure Hybrid AI Development Hub
 
-This is the project-local, opt-in implementation of
-`../docs/FINAL_BUILD_PLAN.md`. It coordinates registered Git repositories,
+This is the project-local, opt-in Secure Hybrid AI Development Hub
+implementation. It coordinates registered Git repositories,
 local Ollama coding, deterministic quality gates, isolated research, bounded
 cloud-review bundles, controlled CI/CD adapters, operational evidence, and a
 versioned project dossier.
