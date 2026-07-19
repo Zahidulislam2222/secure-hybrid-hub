@@ -136,6 +136,15 @@ class SelectModelTests(RoutingFixture, unittest.TestCase):
         self.assertEqual(policy["allowed_cloud_account_profiles"], ["claude-subscription"])
         self.assertEqual(policy["pinned_model_id"], "claude-haiku")
 
+    def test_selected_transport_returns_the_pinned_choice_or_none(self):
+        from hybrid_hub.model_select import selected_transport
+
+        self.assertIsNone(selected_transport(self.hub.database, self.hub.audit, "system-routing"))
+        self.select(PASSING_EVIDENCE)
+        transport = selected_transport(self.hub.database, self.hub.audit, "system-routing")
+        self.assertEqual(transport["provider_model"], "qwen2.5-coder:7b")
+        self.assertEqual(transport["adapter"], "claude-local")
+
     def test_unknown_platform_or_model_is_rejected(self):
         with self.assertRaises(ValidationError):
             self.select(PASSING_EVIDENCE, platform="missing", model="qwen2-5-coder-7b")

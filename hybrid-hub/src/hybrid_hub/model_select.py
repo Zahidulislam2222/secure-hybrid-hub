@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .errors import AdapterError, PolicyDenied, ValidationError
 from .model_contracts import ModelDefinition
-from .model_store import write_record
+from .model_store import load_record, write_record
 from .util import bounded_text, require_id, utc_now
 
 # Adapters with a working execution transport in this build. Platforms whose
@@ -207,6 +207,24 @@ def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_br
                 arguments += ["--http-bridge-executable", http_bridge_executable]
         result = invoke(*arguments, seconds=timeout * 3 + 120)
         return evidence_from_probe_state(result["task"]["state"])
+
+
+def selected_transport(database: Any, audit: Any, system_id: str) -> dict[str, Any] | None:
+    """The transport for the system's pinned model choice, or None when no
+    approved selection exists. Used by `run` so a project configured with
+    `model select` needs no per-invocation adapter/model flags."""
+    from .model_policy_registry import ModelPolicyRegistry
+
+    try:
+        policy = ModelPolicyRegistry(database, audit).active(system_id)
+    except ValidationError:
+        return None
+    if policy.pinned_model_id is None:
+        return None
+    record = load_record(database, f"model-transport:{system_id}:{policy.pinned_model_id}")
+    if record is None or record.get("system_id") != system_id:
+        return None
+    return record
 
 
 def select_model(

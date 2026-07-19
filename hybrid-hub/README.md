@@ -67,7 +67,10 @@ project's routing policy to exactly that choice with `max_attempts` 1: no
 automatic escalation and no automatic fallback; a defeated or unreachable
 model blocks cleanly and waits for a human decision. Vendor HTTP API
 platforms are listed for the roadmap but fail closed when selected.
-Re-run `model select` at any time to change the choice.
+Re-run `model select` at any time to change the choice. After selection,
+guided runs need no per-invocation flags: `run` without `--model` uses the
+project's pinned choice and stored transport automatically (audited as
+`model.selection-used`).
 
 ### Subscription-CLI coding workers
 

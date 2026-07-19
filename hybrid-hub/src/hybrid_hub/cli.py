@@ -10,6 +10,7 @@ from .errors import AuthorizationRequired, HubError, PolicyDenied, ValidationErr
 from .hub import Hub
 from .policy import RANK, compose
 from .topology import Topology
+from .model_select import selected_transport
 from .subscription_worker import SUBSCRIPTION_ADAPTERS, SubscriptionCliConfig, SubscriptionCliWorker
 from .workers import LocalAdapterConfig, LocalWorker
 
@@ -76,7 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--create-workspaces", action="store_true")
     run.add_argument("--repo", action="append", default=[])
     run.add_argument("--through", choices=["scoped", "local-ready", "verified"], default="local-ready")
-    run.add_argument("--adapter", choices=["codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli"], default="codex-local")
+    run.add_argument("--adapter", choices=["codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli"], default=None)
     run.add_argument("--cli-executable", help="absolute claude/codex executable path for subscription adapters")
     run.add_argument("--endpoint", default="http://127.0.0.1:11434")
     run.add_argument("--model")
@@ -364,18 +365,31 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                 raise PolicyDenied("selected modifier is not approved for this system")
             classification = max((classification, modifier_row["modifier"]["classification_floor"]), key=RANK.__getitem__)
         worker = None
+        adapter = args.adapter
+        model = args.model
+        endpoint, bridge, cli_executable = args.endpoint, args.http_bridge_executable, args.cli_executable
         if args.through == "verified":
-            if not args.model:
-                raise AuthorizationRequired("verified orchestration requires an explicitly selected installed local model")
-            if modifier_row and args.model not in modifier_row["modifier"]["allowed_local_models"]:
+            if not model:
+                selection = selected_transport(hub.database, hub.audit, args.system)
+                if selection:
+                    adapter = adapter or selection["adapter"]
+                    model = selection["provider_model"]
+                    endpoint = selection.get("endpoint") or endpoint
+                    bridge = bridge or selection.get("http_bridge_executable")
+                    cli_executable = cli_executable or selection.get("cli_executable")
+                    hub.audit.append("model.selection-used", {"model_id": selection["model_id"], "adapter": adapter, "provider_model": model}, system_id=args.system)
+            if not model:
+                raise AuthorizationRequired("verified orchestration requires an explicitly selected model: pass --model or configure one with `model select`")
+            adapter = adapter or "codex-local"
+            if modifier_row and model not in modifier_row["modifier"]["allowed_local_models"]:
                 raise PolicyDenied("selected local model is not allowed by the project modifier")
-            if args.adapter in SUBSCRIPTION_ADAPTERS:
+            if adapter in SUBSCRIPTION_ADAPTERS:
                 if not args.guided_plan:
                     raise PolicyDenied("subscription adapters support guided plans only")
-                subscription_config = SubscriptionCliConfig(args.adapter, args.cli_executable, args.model, args.timeout)
+                subscription_config = SubscriptionCliConfig(adapter, cli_executable, model, args.timeout)
                 worker = SubscriptionCliWorker(hub.database, hub.audit, hub.leases, subscription_config)
             else:
-                config = LocalAdapterConfig(args.adapter, args.endpoint, args.model, args.timeout, executable=args.executable, http_bridge_executable=args.http_bridge_executable)
+                config = LocalAdapterConfig(adapter, endpoint, model, args.timeout, executable=args.executable, http_bridge_executable=bridge)
                 worker = LocalWorker(hub.database, hub.audit, hub.leases, config)
             worker.preflight()
         task = hub.tasks.create(args.system, args.request, classification, policy.policy_hash, args.task_id)
@@ -406,8 +420,8 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                     return worker.run_file(task_id, prompt)["result"]
                 return worker.run_structured(task_id, prompt)["result"]
             if args.guided_plan:
-                return hub.orchestrator.complete_guided(task["task_id"], driver, adapter=args.adapter, max_repairs=args.max_repairs)
-            return hub.orchestrator.complete(task["task_id"], driver, adapter=args.adapter, max_repairs=args.max_repairs)
+                return hub.orchestrator.complete_guided(task["task_id"], driver, adapter=adapter, max_repairs=args.max_repairs)
+            return hub.orchestrator.complete(task["task_id"], driver, adapter=adapter, max_repairs=args.max_repairs)
         return {"task": task, "workspace": workspace, "authorized_scope": "local-ready", "next": "run --through verified with an explicitly selected installed model, or inspect status"}
     if args.command == "plan":
         if args.plan_command == "submit":
