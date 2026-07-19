@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Allow unprivileged user namespaces (Ubuntu 24.04 AppArmor blocks the sandbox's unshare)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run test suite (unittest)
         working-directory: hybrid-hub
         run: PYTHONPATH=src python3 -m unittest discover -s tests -v
