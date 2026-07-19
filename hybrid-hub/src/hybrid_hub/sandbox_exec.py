@@ -87,7 +87,11 @@ def _landlock(allow_root: str, research_network: bool = False) -> None:
     opened: list[int] = []
     try:
         paths = [(allow_root, rights)]
-        for system_path in ("/usr", "/bin", "/lib", "/lib64"):
+        system_paths = ["/usr", "/bin", "/lib", "/lib64"]
+        interpreter_prefix = os.path.realpath(sys.base_prefix)
+        if not any(interpreter_prefix == p or interpreter_prefix.startswith(p + os.sep) for p in system_paths):
+            system_paths.append(interpreter_prefix)
+        for system_path in system_paths:
             if os.path.exists(system_path):
                 paths.append((system_path, READ_EXECUTE))
         for device in ("/dev/null", "/dev/urandom", "/dev/random"):
