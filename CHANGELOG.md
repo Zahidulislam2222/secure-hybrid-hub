@@ -13,6 +13,17 @@ First public release of the Secure Hybrid AI Development Hub: a fail-closed,
 standard-library-only local policy broker for hybrid AI development
 workflows (Phases 0–11 of the build plan, verified with synthetic fixtures).
 
+### Fixed
+
+- Sandbox now grants read+execute on the running interpreter's installation
+  prefix, so Python installs outside `/usr` (GitHub hostedtoolcache, pyenv,
+  conda) work under Landlock.
+- Test suite is hermetic for public checkouts: no dependency on the private
+  gitignored master dossier, and pytest no longer collects the intentionally
+  failing fixture project.
+- CI enables unprivileged user namespaces on Ubuntu 24.04 runners so the
+  sandbox's `unshare` isolation works.
+
 ### Added
 
 - Deterministic policy broker with typed artifacts, SQLite transactional
