@@ -43,13 +43,16 @@ class ProjectAssetTests(unittest.TestCase):
         self.assertIn("disable-model-invocation: true", (WORKSPACE / ".claude" / "skills" / "hybrid-promote" / "SKILL.md").read_text())
         self.assertFalse((WORKSPACE / ".codex" / "skills").exists())
         json.loads((WORKSPACE / ".vscode" / "tasks.json").read_text())
-        dossier = (WORKSPACE / "PROJECT-DOSSIER.md").read_text()
-        self.assertIn("## 4. Dossier hierarchy and tracing", dossier)
-        self.assertIn("hybrid-hub/dossier/development.json", dossier)
         self.assertFalse((ROOT / "integrations" / "codex-skill").exists())
         self.assertFalse((ROOT / "integrations" / "claude-skill").exists())
         for name in ("standard-local", "healthcare-local", "legal-local", "high-secret"):
             json.loads((ROOT / "config" / "modifiers" / f"{name}.example.json").read_text())
+
+    @unittest.skipUnless((WORKSPACE / "PROJECT-DOSSIER.md").exists(), "private master dossier is gitignored and absent from public checkouts")
+    def test_private_master_dossier_traces_the_structured_dossier(self):
+        dossier = (WORKSPACE / "PROJECT-DOSSIER.md").read_text()
+        self.assertIn("## 4. Dossier hierarchy and tracing", dossier)
+        self.assertIn("hybrid-hub/dossier/development.json", dossier)
 
 
 if __name__ == "__main__":

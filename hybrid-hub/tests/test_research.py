@@ -136,12 +136,13 @@ class ResearchTests(unittest.TestCase):
         execution = self.root / "research-execution"
         execution.mkdir()
         sandbox = Path(__file__).resolve().parents[1] / "src" / "hybrid_hub" / "sandbox_exec.py"
-        target = Path(__file__).resolve().parents[2] / "PROJECT-DOSSIER.md"
+        target = Path(__file__).resolve().parents[2] / "README.md"
+        self.assertTrue(target.exists())
         command = ["unshare", "--user", "--map-root-user", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, "-c", f"from pathlib import Path; print(Path({str(target)!r}).read_text())"]
         completed = subprocess.run(command, cwd=execution, capture_output=True, text=True, timeout=10, check=False)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("PermissionError", completed.stderr)
-        self.assertNotIn("Secure Hybrid AI Development Hub — Project Dossier", completed.stdout)
+        self.assertNotIn("Secure Hybrid AI Development Hub", completed.stdout)
 
     def test_worker_url_and_robots_logic_fail_closed(self):
         with self.assertRaises(ValueError):
