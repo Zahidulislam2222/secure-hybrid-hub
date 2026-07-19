@@ -32,7 +32,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 # or: pytest -q
 ```
 
-The 135-test suite is synthetic and offline: no network, no credentials, no
+The 155-test suite is synthetic and offline: no network, no credentials, no
 installed services. See [CONTRIBUTING.md](CONTRIBUTING.md) for details and
 [hybrid-hub/README.md](hybrid-hub/README.md) for usage — registering a
 system, guided orchestration, per-project modifiers, and the operational

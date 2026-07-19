@@ -65,8 +65,7 @@ a throwaway runtime and records that result — never catalog claims — as the
 model's evaluation. A passing probe approves the model and pins the
 project's routing policy to exactly that choice with `max_attempts` 1: no
 automatic escalation and no automatic fallback; a defeated or unreachable
-model blocks cleanly and waits for a human decision. Vendor HTTP API
-platforms are listed for the roadmap but fail closed when selected.
+model blocks cleanly and waits for a human decision.
 Re-run `model select` at any time to change the choice. After selection,
 guided runs need no per-invocation flags: `run` without `--model` uses the
 project's pinned choice and stored transport automatically (audited as
@@ -96,6 +95,46 @@ audit-logged with its SHA-256 and byte count before the call, and
 subscription adapters accept guided plans only. A Claude-CLI worker shares
 the Claude subscription usage window with an interactive Claude Code
 supervisor session; Codex does not.
+
+### Metered HTTP API coding workers
+
+Guided runs can also use a vendor HTTP API — Anthropic-native
+(`--adapter anthropic-api`) or any OpenAI-compatible endpoint such as
+OpenAI, MiniMax, GLM, or Kimi (`--adapter openai-compatible-api`). This
+transport costs real money per token, so it is fail-closed twice over:
+
+1. The system needs an approved `vendor-api` provider profile with live
+   egress explicitly enabled (`provider propose` → `provider approve
+   --enable-live`), whose endpoint origin must match the base URL.
+2. Every run requires explicit economics: `--input-cost-per-mtok`,
+   `--output-cost-per-mtok`, and a hard `--max-task-cost-usd` spend cap.
+   Token usage from each response is metered and audited
+   (`worker.tokens-metered`); when the accumulated task spend reaches the
+   cap the hub blocks and asks the human — it never switches providers.
+
+The API key is read from a private single-line key file
+(`--api-key-file`, must be `chmod 600`) at call time. Keys are never read
+from environment variables, never stored in hub state or audit, and are
+redacted from any error text. As with subscription workers, prompts are
+audit-logged with their SHA-256 before egress, secret-like material is
+refused in both directions, and only guided plans are accepted.
+
+```bash
+python3 hub.py --runtime /protected/hub-runtime run "..." \
+  --system my-system --through verified --guided-plan .../plan.json \
+  --supervisor-source claude-interactive \
+  --adapter anthropic-api --model claude-haiku-4-5-20251001 \
+  --api-base-url https://api.anthropic.com \
+  --api-key-file /home/me/.hub-secrets/anthropic.key \
+  --input-cost-per-mtok 1.00 --output-cost-per-mtok 5.00 \
+  --max-task-cost-usd 0.25
+```
+
+For OpenAI-compatible vendors the base URL carries the vendor's path
+prefix (for example `https://api.openai.com/v1`); the adapter appends
+`/chat/completions`. Verify current token prices at the vendor console —
+the hub meters against the prices you pass; it cannot know the vendor's
+real prices.
 
 ## One-command guided local implementation
 

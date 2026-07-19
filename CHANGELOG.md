@@ -5,10 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-07-20
 
 ### Added
 
+- Metered vendor HTTP API coding workers: guided packets can be implemented
+  over an Anthropic-native (`anthropic-api`) or OpenAI-compatible
+  (`openai-compatible-api`; OpenAI/MiniMax/GLM/Kimi) HTTPS API. Fail-closed
+  twice over: live egress requires an approved `vendor-api` provider profile
+  with `--enable-live`, and every run requires explicit token prices plus a
+  hard per-task spend cap. Token usage is metered and audited per call
+  (`worker.tokens-metered`); reaching the cap blocks and asks the human.
+  API keys are read from a private `chmod 600` key file at call time —
+  never from environment variables — never stored in state or audit, and
+  redacted from error text.
+- The model catalog gained an `anthropic-api` platform, and both API
+  platforms are now selectable through `model select`, which stores the
+  metered transport (base URL, key file, prices, cap) for flagless runs.
 - Per-project coding-model selection (`model select`): the developer
   chooses the coding platform and model at project start — interactively
   or via flags — from a data-driven catalog
@@ -82,5 +95,5 @@ workflows (Phases 0–11 of the build plan, verified with synthetic fixtures).
 - Native Windows now fails at startup with a clear "requires Linux, WSL2, or
   macOS" message instead of a raw `ModuleNotFoundError` traceback.
 
-[Unreleased]: https://github.com/OWNER/secure-hybrid-hub/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/OWNER/secure-hybrid-hub/releases/tag/v0.9.0
+[0.10.0]: https://github.com/Zahidulislam2222/secure-hybrid-hub/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/Zahidulislam2222/secure-hybrid-hub/releases/tag/v0.9.0

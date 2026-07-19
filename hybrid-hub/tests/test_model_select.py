@@ -28,7 +28,7 @@ class CatalogTests(unittest.TestCase):
     def test_example_catalog_validates_and_lists_all_planned_platforms(self):
         catalog = load_catalog(CATALOG)
         platform_ids = [platform["platform_id"] for platform in catalog["platforms"]]
-        self.assertEqual(platform_ids, ["local-ollama", "claude-subscription", "codex-subscription", "vendor-api"])
+        self.assertEqual(platform_ids, ["local-ollama", "claude-subscription", "codex-subscription", "anthropic-api", "vendor-api"])
         platform, model = find_choice(catalog, "local-ollama", "qwen2-5-coder-7b")
         self.assertEqual(model["provider_model"], "qwen2.5-coder:7b")
         self.assertEqual(platform["adapter"], "claude-local")
@@ -62,7 +62,7 @@ class InteractiveChoiceTests(unittest.TestCase):
         lines: list[str] = []
         platform_id, model_id = interactive_choice(catalog, lambda _prompt: next(answers), lines.append)
         self.assertEqual((platform_id, model_id), ("local-ollama", "gemma3-1b"))
-        self.assertTrue(any("not yet available" in line for line in lines))
+        self.assertTrue(any("Anthropic API" in line for line in lines))
 
     def test_gives_up_after_repeated_invalid_input(self):
         catalog = load_catalog(CATALOG)
@@ -123,10 +123,66 @@ class SelectModelTests(RoutingFixture, unittest.TestCase):
             self.models.policies.active("system-routing")
 
     def test_unimplemented_platform_fails_closed_without_probe(self):
+        import copy
+
+        catalog = copy.deepcopy(self.catalog)
+        catalog["platforms"][0]["adapter"] = "future-adapter"
         with self.assertRaises(PolicyDenied):
-            self.select(PASSING_EVIDENCE, platform="vendor-api", model="vendor-api-model")
+            select_model(
+                self.models, self.hub.database, self.hub.audit, "system-routing", catalog,
+                "local-ollama", "qwen2-5-coder-7b", "owner", endpoint="http://127.0.0.1:11434",
+                http_bridge_executable=None, timeout=60, probe=lambda *args, **kwargs: PASSING_EVIDENCE,
+            )
         with self.assertRaises(ValidationError):
             self.models.policies.active("system-routing")
+
+    def test_api_platform_requires_live_enabled_provider_profile_before_probe(self):
+        from hybrid_hub.errors import AuthorizationRequired
+
+        calls: list[tuple] = []
+
+        def probe(provider_model, adapter, **kwargs):
+            calls.append((provider_model, adapter))
+            return PASSING_EVIDENCE
+
+        with self.assertRaises(AuthorizationRequired):
+            select_model(
+                self.models, self.hub.database, self.hub.audit, "system-routing", self.catalog,
+                "anthropic-api", "claude-haiku-api", "owner", endpoint="http://127.0.0.1:11434",
+                http_bridge_executable=None, timeout=60, probe=probe,
+                api_base_url="https://api.synthetic.test", api_key_file="/synthetic/api.key",
+                input_cost_per_mtok=1.0, output_cost_per_mtok=5.0, max_task_cost_usd=0.25,
+            )
+        self.assertEqual(calls, [])
+
+    def test_api_platform_selects_and_stores_the_metered_transport(self):
+        profile = self.hub.provider_profiles.propose("system-routing", {
+            "provider": "vendor-api", "mode": "live", "endpoint": "https://api.synthetic.test",
+            "account_type": "api", "account_identity": "owner", "max_turns": 1,
+            "max_seconds": 300, "max_cost_usd": 1.0,
+        }, "owner")
+        self.hub.provider_profiles.approve(profile["profile_id"], "owner", enable_live=True)
+        seen: list[dict] = []
+
+        def probe(provider_model, adapter, **kwargs):
+            seen.append({"provider_model": provider_model, "adapter": adapter, **kwargs})
+            return PASSING_EVIDENCE
+
+        result = select_model(
+            self.models, self.hub.database, self.hub.audit, "system-routing", self.catalog,
+            "anthropic-api", "claude-haiku-api", "owner", endpoint="http://127.0.0.1:11434",
+            http_bridge_executable=None, timeout=60, probe=probe,
+            api_base_url="https://api.synthetic.test", api_key_file="/synthetic/api.key",
+            input_cost_per_mtok=1.0, output_cost_per_mtok=5.0, max_task_cost_usd=0.25,
+        )
+        self.assertEqual(seen[0]["adapter"], "anthropic-api")
+        self.assertEqual(seen[0]["api_base_url"], "https://api.synthetic.test")
+        self.assertTrue(result["policy"]["allow_cloud"])
+        transport = load_record(self.hub.database, "model-transport:system-routing:claude-haiku-api")
+        self.assertEqual(transport["adapter"], "anthropic-api")
+        self.assertEqual(transport["api_key_file"], "/synthetic/api.key")
+        self.assertEqual(transport["input_cost_per_mtok"], 1.0)
+        self.assertEqual(transport["max_task_cost_usd"], 0.25)
 
     def test_subscription_platform_selects_with_cloud_policy(self):
         result, calls = self.select(PASSING_EVIDENCE, platform="claude-subscription", model="claude-haiku")

@@ -17,6 +17,10 @@ from .util import canonical_json, require_id, sha256_bytes, sha256_json, utc_now
 ACCOUNT_TYPES = {
     "codex-cloud": {"api", "business", "enterprise"},
     "claude-cloud": {"api", "team", "enterprise"},
+    # Metered vendor HTTP APIs used by the coding tier (Anthropic-native or
+    # OpenAI-compatible). Live egress for these still requires an approved
+    # profile with --enable-live, exactly like the review providers above.
+    "vendor-api": {"api"},
 }
 PURPOSES = {"planning", "review", "diagnosis", "fallback-patch"}
 

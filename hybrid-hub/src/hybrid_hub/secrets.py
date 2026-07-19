@@ -24,6 +24,31 @@ from .util import bounded_text, canonical_json, require_id, sha256_bytes, sha256
 
 
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+API_KEY_LINE = re.compile(r"^[A-Za-z0-9._~+/=-]{16,512}$")
+
+
+def read_api_key_file(path: Path) -> str:
+    """Read a provider API key from a dedicated single-line key file.
+
+    Environment variables are deliberately not supported for adapter keys:
+    a key in the environment leaks into every child process, while a key
+    file is read here on demand and held only in a local variable. The file
+    must be private to the owner so a multi-user machine cannot read it.
+    """
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise ValidationError("API key file must be an absolute path")
+    try:
+        status = path.stat()
+    except OSError as exc:
+        raise ValidationError("API key file is unreadable") from exc
+    if not path.is_file() or status.st_size > 4096:
+        raise ValidationError("API key file must be a small regular file")
+    if os.name == "posix" and status.st_mode & 0o077:
+        raise PolicyDenied("API key file must not be group- or world-accessible (chmod 600)")
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(lines) != 1 or not API_KEY_LINE.fullmatch(lines[0]):
+        raise ValidationError("API key file must contain exactly one key on a single line")
+    return lines[0]
 
 
 class SecretBackend(ABC):

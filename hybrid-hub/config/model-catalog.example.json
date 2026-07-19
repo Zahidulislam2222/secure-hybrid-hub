@@ -135,11 +135,43 @@
       ]
     },
     {
+      "platform_id": "anthropic-api",
+      "label": "Anthropic API (metered per-token cost; requires key file + provider approval)",
+      "adapter": "anthropic-api",
+      "notes": [
+        "Costs real money per token. Requires: a private key file (--api-key-file, chmod 600), an approved vendor-api provider profile with --enable-live on the system, and explicit --input-cost-per-mtok/--output-cost-per-mtok/--max-task-cost-usd.",
+        "Verify current prices at the provider console before selecting; the hub meters usage against the prices you pass, it cannot know the vendor's real prices.",
+        "Sending client code to a third-party API is a per-project policy decision; regulated projects should stay local."
+      ],
+      "models": [
+        {
+          "model_id": "claude-haiku-api",
+          "provider_model": "claude-haiku-4-5-20251001",
+          "label": "Claude Haiku 4.5 via API (cheap metered workhorse)",
+          "definition": {
+            "model_id": "claude-haiku-api",
+            "provider": "anthropic",
+            "adapter": "anthropic-api",
+            "location": "cloud",
+            "account_profile": "vendor-api",
+            "roles": ["coding"],
+            "allowed_classifications": ["R0", "R1", "R2"],
+            "retention_days": 30,
+            "regions": ["vendor-managed"],
+            "structured_output": true,
+            "accepted_packet_cost_usd": 0.05,
+            "benchmark_success_rate": 0.5
+          }
+        }
+      ]
+    },
+    {
       "platform_id": "vendor-api",
-      "label": "Vendor HTTP APIs (per-token cost; requires approved credentials)",
+      "label": "OpenAI-compatible vendor APIs (MiniMax/GLM/Kimi/OpenAI; metered per-token cost)",
       "adapter": "openai-compatible-api",
       "notes": [
-        "Not yet available: the HTTP API adapter and credential backend are a later build phase behind an explicit cost approval.",
+        "Costs real money per token. Base URL includes the vendor path prefix (e.g. https://api.openai.com/v1); the adapter appends /chat/completions.",
+        "Requires: a private key file (--api-key-file, chmod 600), an approved vendor-api provider profile with --enable-live on the system, and explicit --input-cost-per-mtok/--output-cost-per-mtok/--max-task-cost-usd.",
         "Sending client code to a third-party API is a per-project policy decision; regulated projects should stay local."
       ],
       "models": [

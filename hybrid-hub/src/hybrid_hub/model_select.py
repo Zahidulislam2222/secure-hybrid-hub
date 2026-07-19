@@ -7,7 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from .errors import AdapterError, PolicyDenied, ValidationError
+from .errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
+from .http_api_worker import HTTP_API_ADAPTERS, PROVIDER_IDENTITY
 from .model_contracts import ModelDefinition
 from .model_store import load_record, write_record
 from .util import bounded_text, require_id, utc_now
@@ -15,8 +16,18 @@ from .util import bounded_text, require_id, utc_now
 # Adapters with a working execution transport in this build. Platforms whose
 # adapter is not listed here are shown but refuse selection until their
 # adapter phase ships.
-IMPLEMENTED_ADAPTERS = frozenset({"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli"})
+IMPLEMENTED_ADAPTERS = frozenset({"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli", "anthropic-api", "openai-compatible-api"})
 SUBSCRIPTION_CLI_ADAPTERS = frozenset({"claude-subscription-cli", "codex-subscription-cli"})
+
+
+def _https_origin(url: str) -> str:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValidationError("API base URL must be HTTPS")
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"https://{parsed.hostname}{port}"
 CATALOG_SCHEMA_VERSION = "1.0.0"
 PROBE_SYSTEM = "model-probe"
 PROBE_REPO = f"{PROBE_SYSTEM}-repo-1"
@@ -159,7 +170,7 @@ def _probe_plan() -> dict[str, Any]:
     }
 
 
-def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_bridge_executable: str | None, timeout: int, cli_executable: str | None = None) -> dict[str, Any]:
+def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_bridge_executable: str | None, timeout: int, cli_executable: str | None = None, api_base_url: str | None = None, api_key_file: str | None = None, api_version: str | None = None, input_cost_per_mtok: float | None = None, output_cost_per_mtok: float | None = None, max_task_cost_usd: float | None = None) -> dict[str, Any]:
     """Real one-packet synthetic evaluation in a throwaway runtime. The counts
     recorded as evaluation evidence come from an actual guided run, never from
     catalog claims or model confidence."""
@@ -201,12 +212,53 @@ def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_br
             if not cli_executable:
                 raise ValidationError("subscription platforms require --cli-executable for the evaluation probe")
             arguments += ["--cli-executable", cli_executable]
+        elif adapter in HTTP_API_ADAPTERS:
+            if not api_base_url or not api_key_file or input_cost_per_mtok is None or output_cost_per_mtok is None or max_task_cost_usd is None:
+                raise ValidationError("API platforms require --api-base-url, --api-key-file, and explicit token prices and spend cap for the evaluation probe")
+            # The throwaway probe runtime needs its own live-enabled provider
+            # profile; the developer's `model select` invocation with explicit
+            # costs is the human authorization for this bounded probe spend.
+            profile_file = tmp / "provider.json"
+            profile_file.write_text(json.dumps({
+                "provider": PROVIDER_IDENTITY, "mode": "live", "endpoint": _https_origin(api_base_url),
+                "account_type": "api", "account_identity": "model-probe",
+                "max_turns": 1, "max_seconds": min(timeout * 3, 1800), "max_cost_usd": float(max_task_cost_usd),
+            }), encoding="utf-8")
+            profile = invoke("provider", "propose", PROBE_SYSTEM, "--profile", str(profile_file), "--proposer", "model-probe")
+            invoke("provider", "approve", profile["profile_id"], "--approver", "model-probe", "--enable-live")
+            arguments += [
+                "--api-base-url", api_base_url, "--api-key-file", api_key_file,
+                "--input-cost-per-mtok", str(input_cost_per_mtok), "--output-cost-per-mtok", str(output_cost_per_mtok),
+                "--max-task-cost-usd", str(max_task_cost_usd),
+            ]
+            if api_version:
+                arguments += ["--api-version", api_version]
         else:
             arguments += ["--endpoint", endpoint]
             if http_bridge_executable:
                 arguments += ["--http-bridge-executable", http_bridge_executable]
         result = invoke(*arguments, seconds=timeout * 3 + 120)
         return evidence_from_probe_state(result["task"]["state"])
+
+
+def _require_live_vendor_profile(database: Any, audit: Any, system_id: str, api_base_url: str | None) -> None:
+    """API platforms are selectable only after the target system's vendor-api
+    provider profile was separately approved with --enable-live. Checking
+    before the probe keeps the live-egress authorization an explicit human
+    step and avoids spending probe tokens on a selection that cannot run."""
+    from .cloud import ProviderProfile, ProviderProfileStore
+
+    if not api_base_url:
+        raise ValidationError("API platforms require --api-base-url")
+    try:
+        profile_row = ProviderProfileStore(database, audit).active(system_id, PROVIDER_IDENTITY)
+    except AuthorizationRequired as exc:
+        raise AuthorizationRequired("selecting an API platform requires an approved vendor-api provider profile on this system: run `provider propose` then `provider approve --enable-live`") from exc
+    profile = ProviderProfile.from_dict(profile_row["profile"])
+    if profile.mode != "live" or not profile_row["live_enabled"]:
+        raise AuthorizationRequired("vendor API egress is not live-enabled for this system; approve the provider profile with --enable-live")
+    if profile.endpoint != _https_origin(api_base_url):
+        raise PolicyDenied("API base URL does not match the approved provider endpoint origin")
 
 
 def selected_transport(database: Any, audit: Any, system_id: str) -> dict[str, Any] | None:
@@ -241,6 +293,12 @@ def select_model(
     http_bridge_executable: str | None,
     timeout: int,
     cli_executable: str | None = None,
+    api_base_url: str | None = None,
+    api_key_file: str | None = None,
+    api_version: str | None = None,
+    input_cost_per_mtok: float | None = None,
+    output_cost_per_mtok: float | None = None,
+    max_task_cost_usd: float | None = None,
     probe: Callable[..., dict[str, Any]] = run_local_probe,
 ) -> dict[str, Any]:
     require_id(actor, "actor")
@@ -248,6 +306,8 @@ def select_model(
     adapter = platform["adapter"]
     if adapter not in IMPLEMENTED_ADAPTERS:
         raise PolicyDenied(f"platform '{platform_id}' needs adapter '{adapter}' which is not implemented yet; choose an available platform")
+    if adapter in HTTP_API_ADAPTERS:
+        _require_live_vendor_profile(database, audit, system_id, api_base_url)
     definition = ModelDefinition.from_dict(model["definition"])
     try:
         existing = models.registry.get(system_id, model_id)
@@ -257,7 +317,7 @@ def select_model(
     if existing is None or existing.get("status") != "approved":
         if existing is None:
             models.registry.discover(system_id, model["definition"], actor)
-        evidence = probe(model["provider_model"], adapter, endpoint=endpoint, http_bridge_executable=http_bridge_executable, timeout=timeout, cli_executable=cli_executable)
+        evidence = probe(model["provider_model"], adapter, endpoint=endpoint, http_bridge_executable=http_bridge_executable, timeout=timeout, cli_executable=cli_executable, api_base_url=api_base_url, api_key_file=api_key_file, api_version=api_version, input_cost_per_mtok=input_cost_per_mtok, output_cost_per_mtok=output_cost_per_mtok, max_task_cost_usd=max_task_cost_usd)
         probed = True
         models.registry.record_evaluation(system_id, model_id, evidence, actor)
         models.registry.approve(system_id, model_id, actor)
@@ -282,6 +342,12 @@ def select_model(
         "endpoint": endpoint,
         "http_bridge_executable": http_bridge_executable,
         "cli_executable": cli_executable,
+        "api_base_url": api_base_url,
+        "api_key_file": api_key_file,
+        "api_version": api_version,
+        "input_cost_per_mtok": input_cost_per_mtok,
+        "output_cost_per_mtok": output_cost_per_mtok,
+        "max_task_cost_usd": max_task_cost_usd,
         "timeout": timeout,
         "updated_at": utc_now(),
     }

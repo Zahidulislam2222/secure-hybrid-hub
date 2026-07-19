@@ -58,6 +58,12 @@ def parser() -> argparse.ArgumentParser:
     select.add_argument("--endpoint", default="http://127.0.0.1:11434")
     select.add_argument("--http-bridge-executable", help="absolute local curl/curl.exe path for bounded loopback Ollama HTTP")
     select.add_argument("--cli-executable", help="absolute claude/codex executable path for subscription platforms")
+    select.add_argument("--api-base-url", help="HTTPS base URL for API platforms")
+    select.add_argument("--api-key-file", help="absolute path to a private single-line API key file for API platforms")
+    select.add_argument("--api-version", help="anthropic-version header value for the anthropic-api adapter")
+    select.add_argument("--input-cost-per-mtok", type=float, help="input token price in USD per million tokens for API platforms")
+    select.add_argument("--output-cost-per-mtok", type=float, help="output token price in USD per million tokens for API platforms")
+    select.add_argument("--max-task-cost-usd", type=float, help="hard per-task API spend cap in USD for API platforms")
     select.add_argument("--timeout", type=int, default=300)
 
     route = actions.add_parser("route")
