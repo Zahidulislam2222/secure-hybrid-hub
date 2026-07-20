@@ -53,8 +53,9 @@ class AdversarialTests(unittest.TestCase):
         page = (FIXTURES / "security" / "malicious-page.html").read_text()
         self.assertIn("UNTRUSTED TEST PAGE", page)
         self.assertIn("169.254.169.254", page)
+        self.assertFalse((FIXTURES / "security" / "uploaded.txt").exists())
 
-    def test_external_anchor_detects_post_anchor_chain_divergence(self):
+    def test_external_anchor_detects_a_rebuilt_chain_that_internal_verify_accepts(self):
         with tempfile.TemporaryDirectory() as temporary:
             hub = Hub(Path(temporary) / "runtime")
             hub.audit.append("test.first", {"n": 1})
@@ -62,14 +63,25 @@ class AdversarialTests(unittest.TestCase):
             anchor = hub.audit.head()
             self.assertEqual(anchor["count"], 2)
             self.assertTrue(hub.audit.verify(anchor))
-            # Any change after the anchor point — an extra event here, or a whole
-            # rebuilt chain in a real attack — leaves internal verify() still
-            # passing (it re-derives every hash) while the external anchor kept
-            # out of the runtime no longer matches.
-            hub.audit.append("test.injected", {"n": 3})
+            # Legitimate later appends keep the anchored prefix valid: the anchor
+            # asserts the recorded history is unchanged, not that nothing new
+            # happened.
+            hub.audit.append("test.third", {"n": 3})
+            self.assertTrue(hub.audit.verify(anchor))
+            # Now simulate an attacker rebuilding the whole chain from scratch
+            # with different events. Internal verify() still passes (every hash
+            # re-derives consistently), but the external anchor does not.
+            with hub.database.transaction() as connection:
+                connection.execute("DELETE FROM audit_events")
+            hub.audit.append("attacker.injected-one", {"n": 9})
+            hub.audit.append("attacker.injected-two", {"n": 8})
             self.assertTrue(hub.audit.verify())
             self.assertFalse(hub.audit.verify(anchor))
-        self.assertFalse((FIXTURES / "security" / "uploaded.txt").exists())
+            # And a chain truncated below the anchored length is rejected too.
+            with hub.database.transaction() as connection:
+                connection.execute("DELETE FROM audit_events")
+            hub.audit.append("attacker.only-one", {"n": 7})
+            self.assertFalse(hub.audit.verify(anchor))
 
 
 if __name__ == "__main__":

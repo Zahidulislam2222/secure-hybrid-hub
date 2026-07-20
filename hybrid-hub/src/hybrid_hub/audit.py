@@ -59,10 +59,23 @@ class AuditLog:
             return event_hash
 
     def verify(self, anchor: dict[str, Any] | None = None) -> bool:
+        anchor_count: int | None = None
+        anchor_head: Any = None
+        if anchor is not None:
+            if not isinstance(anchor, dict):
+                return False
+            anchor_count = anchor.get("count")
+            anchor_head = anchor.get("head_hash")
+            if not isinstance(anchor_count, int) or isinstance(anchor_count, bool) or anchor_count < 0:
+                return False
         previous_hash = "0" * 64
+        prefix_head = "0" * 64
         with self.database.connect() as connection:
             rows = connection.execute("SELECT * FROM audit_events ORDER BY seq").fetchall()
-        for row in rows:
+        if anchor_count is not None and len(rows) < anchor_count:
+            # The chain cannot have fewer events than were anchored: truncation.
+            return False
+        for index, row in enumerate(rows):
             payload = json.loads(row["payload_json"])
             material = {
                 "event_id": row["event_id"], "timestamp": row["timestamp"],
@@ -73,26 +86,27 @@ class AuditLog:
             if row["previous_hash"] != previous_hash or row["event_hash"] != sha256_bytes(canonical_json(material)):
                 return False
             previous_hash = row["event_hash"]
-        if anchor is not None:
-            # An externally stored anchor detects whole-chain rewrites that the
-            # internal hash-chain check cannot: if every row (including hashes)
-            # were rebuilt, verify() alone still returns True. Comparing the
-            # live head hash and event count against a copy kept outside the
-            # runtime catches that.
-            if not isinstance(anchor, dict):
-                return False
-            if anchor.get("head_hash") != previous_hash or anchor.get("count") != len(rows):
-                return False
+            if anchor_count is not None and index + 1 == anchor_count:
+                prefix_head = previous_hash
+        if anchor_count is not None and prefix_head != anchor_head:
+            # An externally stored anchor commits to the chain head at the moment
+            # it was taken. Re-deriving the prefix head and comparing catches a
+            # whole-chain rewrite that the internal chain check cannot — a
+            # consistently rebuilt chain still re-derives valid per-row hashes.
+            # Prefix (not full-head) comparison so legitimate later appends stay
+            # valid: the anchor asserts the recorded history is unchanged.
+            return False
         return True
 
     def head(self) -> dict[str, Any]:
         """Return a small tamper-evidence anchor to store OUTSIDE the runtime.
 
-        The head hash commits to the entire chain; recording it somewhere the
-        runtime cannot rewrite (a git commit, a printed note) lets a later
-        `verify(anchor=...)` detect a full-chain rebuild.
+        The head hash commits to every event recorded so far; storing it
+        somewhere the runtime cannot rewrite (a git commit, a printed note) lets
+        a later `verify(anchor=...)` detect any change to that recorded history,
+        while still accepting events appended afterwards.
         """
-        with self.database.connect() as connection:
+        with self.database.transaction() as connection:
             row = connection.execute("SELECT event_hash FROM audit_events ORDER BY seq DESC LIMIT 1").fetchone()
             count = connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
         return {"head_hash": row[0] if row else "0" * 64, "count": count, "anchored_at": utc_now()}
