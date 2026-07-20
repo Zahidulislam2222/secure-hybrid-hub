@@ -58,7 +58,7 @@ class AuditLog:
             )
             return event_hash
 
-    def verify(self) -> bool:
+    def verify(self, anchor: dict[str, Any] | None = None) -> bool:
         previous_hash = "0" * 64
         with self.database.connect() as connection:
             rows = connection.execute("SELECT * FROM audit_events ORDER BY seq").fetchall()
@@ -73,7 +73,29 @@ class AuditLog:
             if row["previous_hash"] != previous_hash or row["event_hash"] != sha256_bytes(canonical_json(material)):
                 return False
             previous_hash = row["event_hash"]
+        if anchor is not None:
+            # An externally stored anchor detects whole-chain rewrites that the
+            # internal hash-chain check cannot: if every row (including hashes)
+            # were rebuilt, verify() alone still returns True. Comparing the
+            # live head hash and event count against a copy kept outside the
+            # runtime catches that.
+            if not isinstance(anchor, dict):
+                return False
+            if anchor.get("head_hash") != previous_hash or anchor.get("count") != len(rows):
+                return False
         return True
+
+    def head(self) -> dict[str, Any]:
+        """Return a small tamper-evidence anchor to store OUTSIDE the runtime.
+
+        The head hash commits to the entire chain; recording it somewhere the
+        runtime cannot rewrite (a git commit, a printed note) lets a later
+        `verify(anchor=...)` detect a full-chain rebuild.
+        """
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT event_hash FROM audit_events ORDER BY seq DESC LIMIT 1").fetchone()
+            count = connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+        return {"head_hash": row[0] if row else "0" * 64, "count": count, "anchored_at": utc_now()}
 
     def export(self) -> list[dict[str, Any]]:
         with self.database.connect() as connection:

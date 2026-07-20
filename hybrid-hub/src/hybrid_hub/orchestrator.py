@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from .audit import AuditLog, SECRET_PATTERNS
 from .dossier import DossierStore
-from .errors import AdapterError, PolicyDenied, ValidationError
+from .errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
 from .guided import EvidencePacketBuilder, GuidedPlanStore
 from .quality import QualityRunner
 from .state import TaskManager
@@ -275,6 +275,14 @@ class Orchestrator:
                     result = {"status": "ok", "changed_paths": changed_paths, "operations": operations}
                     request_hash = sha256_json(prompt_hashes)
                     applied = self.applier.apply(task_id, adapter, global_attempt, request_hash, result, allowed_scope=allowed_scope, exact_scope=True)
+                except AuthorizationRequired as exc:
+                    # A missing/unapproved provider profile surfaces here at the
+                    # first egress. Block cleanly (terminal) so final_report
+                    # releases the workspace lease, instead of letting the
+                    # exception escape and strand the task in LOCAL_IMPLEMENTING
+                    # holding its lease. Recovery: approve the provider, re-run.
+                    self.tasks.transition(task_id, "BLOCKED_POLICY", reason=f"authorization required: {exc}")
+                    return self.final_report(task_id)
                 except PolicyDenied as exc:
                     self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
                     return self.final_report(task_id)
@@ -468,6 +476,9 @@ class Orchestrator:
             request_hash = sha256_bytes(prompt.encode("utf-8"))
             try:
                 result = driver(task_id, prompt, attempt, role)
+            except AuthorizationRequired as exc:
+                self.tasks.transition(task_id, "BLOCKED_POLICY", reason=f"authorization required: {exc}")
+                return self.final_report(task_id)
             except (TimeoutError, OSError) as exc:
                 self.tasks.transition(task_id, "FAILED_INFRA", reason=f"local worker infrastructure failure: {type(exc).__name__}")
                 return self.final_report(task_id)

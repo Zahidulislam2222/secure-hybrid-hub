@@ -53,6 +53,22 @@ class AdversarialTests(unittest.TestCase):
         page = (FIXTURES / "security" / "malicious-page.html").read_text()
         self.assertIn("UNTRUSTED TEST PAGE", page)
         self.assertIn("169.254.169.254", page)
+
+    def test_external_anchor_detects_post_anchor_chain_divergence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            hub = Hub(Path(temporary) / "runtime")
+            hub.audit.append("test.first", {"n": 1})
+            hub.audit.append("test.second", {"n": 2})
+            anchor = hub.audit.head()
+            self.assertEqual(anchor["count"], 2)
+            self.assertTrue(hub.audit.verify(anchor))
+            # Any change after the anchor point — an extra event here, or a whole
+            # rebuilt chain in a real attack — leaves internal verify() still
+            # passing (it re-derives every hash) while the external anchor kept
+            # out of the runtime no longer matches.
+            hub.audit.append("test.injected", {"n": 3})
+            self.assertTrue(hub.audit.verify())
+            self.assertFalse(hub.audit.verify(anchor))
         self.assertFalse((FIXTURES / "security" / "uploaded.txt").exists())
 
 

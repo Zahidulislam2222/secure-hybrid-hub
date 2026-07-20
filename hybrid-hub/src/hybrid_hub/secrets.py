@@ -51,6 +51,22 @@ def read_api_key_file(path: Path) -> str:
     return lines[0]
 
 
+def api_key_age_days(path: Path) -> float:
+    """Report how many days old an API key file is (by last modification).
+
+    A rotation threshold is deliberately not hardcoded here: the hub surfaces
+    the age so a human can judge when a credential is stale, rather than
+    enforcing an invented policy number.
+    """
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise ValidationError("API key file must be an absolute path")
+    try:
+        modified = path.stat().st_mtime
+    except OSError as exc:
+        raise ValidationError("API key file is unreadable") from exc
+    return round(max(0.0, (time.time() - modified) / 86400), 3)
+
+
 class SecretBackend(ABC):
     name: str
 

@@ -20,7 +20,9 @@ class LeaseManager:
                 connection.execute("INSERT INTO leases VALUES(?,?,?,?)", (resource, owner, utc_now(), now + ttl_seconds))
             except Exception as exc:
                 if "UNIQUE" in str(exc):
-                    raise ConflictError(f"resource already leased: {resource}") from exc
+                    holder = connection.execute("SELECT owner FROM leases WHERE resource=?", (resource,)).fetchone()
+                    owned_by = f" held by {holder[0]}; cancel or resume that task to release it" if holder else ""
+                    raise ConflictError(f"resource already leased: {resource}{owned_by}") from exc
                 raise
 
     def release(self, resource: str, owner: str) -> None:

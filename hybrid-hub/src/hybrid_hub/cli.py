@@ -143,7 +143,9 @@ def _parser() -> argparse.ArgumentParser:
 
     audit = sub.add_parser("audit")
     audit_sub = audit.add_subparsers(dest="audit_command", required=True)
-    audit_sub.add_parser("verify")
+    audit_verify = audit_sub.add_parser("verify")
+    audit_verify.add_argument("--anchor", type=Path, help="externally stored anchor JSON to check the live chain head against")
+    audit_sub.add_parser("anchor")
     audit_sub.add_parser("export")
 
     research = sub.add_parser("research")
@@ -474,7 +476,12 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         hub.audit.append("emergency-stop.cleared" if args.clear else "emergency-stop.activated", {"active": not args.clear})
         return {"emergency_stop": not args.clear}
     if args.command == "audit":
-        return {"valid": hub.audit.verify()} if args.audit_command == "verify" else hub.audit.export()
+        if args.audit_command == "verify":
+            anchor = json.loads(args.anchor.read_text(encoding="utf-8")) if args.anchor else None
+            return {"valid": hub.audit.verify(anchor), "anchor_checked": anchor is not None}
+        if args.audit_command == "anchor":
+            return hub.audit.head()
+        return hub.audit.export()
     if args.command == "research":
         if args.research_command == "propose":
             return hub.research_policies.propose(args.system_id, args.domain, args.proposer, max_bytes=args.max_bytes, timeout=args.timeout, minimum_interval=args.minimum_interval, searxng=args.searxng)

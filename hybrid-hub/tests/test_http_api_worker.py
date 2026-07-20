@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from test_integration import IntegrationBase
 
-from hybrid_hub.errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
+from hybrid_hub.errors import AdapterError, AuthorizationRequired, ConflictError, PolicyDenied, ValidationError
 from hybrid_hub.http_api_worker import HttpApiConfig, HttpApiWorker
 from hybrid_hub.secrets import read_api_key_file
 
@@ -198,20 +198,35 @@ class HttpApiWorkerTests(HttpApiWorkerBase):
                 worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         post.assert_not_called()
 
-    def test_cap_exceeding_call_blocks_and_next_call_never_egresses(self):
+    def test_worst_case_ceiling_refuses_the_first_call_before_egress(self):
+        # With expensive prices the worst case for even the first call already
+        # exceeds a tiny cap, so the strict pre-egress ceiling blocks BEFORE any
+        # HTTP call or metering (no bounded overshoot — DEFECT-LOG row 6 fix).
         self.approve_provider()
         worker = self.worker(cap=0.001, input_cost=100.0, output_cost=100.0)
-        body = anthropic_body("def ready():\n    return True\n", input_tokens=10_000, output_tokens=10_000)
-        with patch("hybrid_hub.http_api_worker._http_post", return_value=(200, body)):
-            with self.assertRaises(PolicyDenied):
-                worker.run_file(self.task["task_id"], "Generate one synthetic file.")
-        metered = self.audit_events("worker.tokens-metered")
-        self.assertEqual(len(metered), 1)
-        self.assertGreater(metered[0]["spent_usd"], metered[0]["cap_usd"])
         with patch("hybrid_hub.http_api_worker._http_post") as post:
             with self.assertRaises(PolicyDenied):
                 worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         post.assert_not_called()
+        self.assertEqual(self.audit_events("worker.tokens-metered"), [])
+        self.assertEqual(self.audit_events("worker.cloud-context-sent"), [])
+
+    def test_cap_admits_one_call_then_refuses_the_next_before_egress(self):
+        # Cap sized so call 1's worst case fits but a second call's worst case
+        # would breach it: call 1 egresses and is metered, call 2 is refused
+        # pre-egress with no second HTTP call and no second metering event.
+        self.approve_provider(max_cost=1.0)
+        worker = self.worker(cap=0.011, input_cost=1.0, output_cost=5.0)
+        body = anthropic_body("def ready():\n    return True\n", input_tokens=500, output_tokens=200)
+        with patch("hybrid_hub.http_api_worker._http_post", return_value=(200, body)) as post:
+            worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+            self.assertEqual(post.call_count, 1)
+            with self.assertRaises(PolicyDenied):
+                worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+            self.assertEqual(post.call_count, 1)
+        metered = self.audit_events("worker.tokens-metered")
+        self.assertEqual(len(metered), 1)
+        self.assertLessEqual(metered[0]["spent_usd"], metered[0]["cap_usd"])
 
     def test_secretlike_prompt_and_output_are_refused(self):
         self.approve_provider()
@@ -268,6 +283,8 @@ class HttpApiWorkerTests(HttpApiWorkerBase):
         self.assertEqual(report["transport"], "https-api")
         self.assertEqual(report["credential_source"], "key-file")
         self.assertTrue(report["available"])
+        self.assertIn("key_age_days", report)
+        self.assertGreaterEqual(report["key_age_days"], 0.0)
 
 
 class GuidedHttpApiFlowTests(IntegrationBase):
@@ -334,6 +351,57 @@ class GuidedHttpApiFlowTests(IntegrationBase):
         with self.hub.database.connect() as connection:
             metered = connection.execute("SELECT COUNT(*) FROM audit_events WHERE event_type='worker.tokens-metered'").fetchone()[0]
         self.assertEqual(metered, 2)
+
+    def test_missing_profile_blocks_cleanly_and_releases_the_repo_lease(self):
+        # A guided run whose worker cannot authorize (no live-enabled provider
+        # profile) must not strand the task silently in LOCAL_IMPLEMENTING with
+        # an uncaught exception holding its workspace lease. It blocks cleanly
+        # (terminal), which auto-releases the repo lease so a later run on the
+        # same repo is not blocked (DEFECT-LOG row 4 fix).
+        project = self.root / "api-noauth-project"
+        project.mkdir()
+        (project / "README.md").write_text("# Synthetic API no-auth\n", encoding="utf-8")
+        from test_integration import git_repo
+
+        git_repo(project)
+        registration = self.hub.registry.register_system("noauth-system", "api-client", "NoAuth", [str(project)], ["standard"])
+        discovery = self.hub.registry.discover("noauth-system")
+        repo_id = discovery["repositories"][0]["repo_id"]
+        version = self.hub.dossier.create_draft("noauth-system", {"purpose": "no auth", "hierarchy": {"repositories": [repo_id]}, "provenance": [{"source": "synthetic-test"}]})
+        self.hub.dossier.approve("noauth-system", version, "test-owner")
+        self.hub.registry.approve_system("noauth-system", "test-owner")
+        task = self.hub.tasks.create("noauth-system", "Synthetic no-auth build", "R1", registration["policy"]["policy_hash"], "task-noauth")
+        for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED"):
+            self.hub.tasks.transition(task["task_id"], state)
+        plan = {
+            "outcome": "A module", "non_goals": ["deployment"], "acceptance_criteria": ["parses"],
+            "packets": [{
+                "packet_id": "core", "title": "Implement", "objective": "Create the module",
+                "repository_ids": [repo_id], "allowed_paths": {repo_id: ["app.py"]}, "context_paths": {repo_id: ["README.md"]},
+                "deliverables": [{"repo_id": repo_id, "path": "app.py", "purpose": "Impl", "instructions": "Define def ready() returning True."}],
+                "depends_on": [], "acceptance_criteria": ["ready True"], "test_focus": ["parse"],
+                "research": [], "research_required": False, "research_guidance": [],
+            }],
+            "final_test_strategy": ["parse"], "unresolved_decisions": [],
+        }
+        self.hub.orchestrator.submit_guided_plan(task["task_id"], plan, "claude-interactive")
+        workspace = self.hub.workspaces.create(task["task_id"], [repo_id])
+        self.hub.tasks.transition(task["task_id"], "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        key_path = self.root / "noauth.key"
+        key_path.write_text(SYNTHETIC_KEY + "\n", encoding="utf-8")
+        os.chmod(key_path, 0o600)
+        config = HttpApiConfig("anthropic-api", ORIGIN, "synthetic-model", str(key_path), 1.0, 5.0, 0.25)
+        worker = HttpApiWorker(self.hub.database, self.hub.audit, self.hub.leases, config, self.hub.provider_profiles)
+
+        def driver(task_id, prompt, attempt, role):
+            return worker.run_file(task_id, prompt)["result"]
+
+        report = self.hub.orchestrator.complete_guided(task["task_id"], driver, adapter="anthropic-api")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
+        self.assertIn("authorization required", report["task"]["reason"])
+        # Terminal block auto-releases the workspace lease via final_report.
+        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == task["task_id"]], [])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-07-20
+
+### Added
+
+- External audit anchor: `audit anchor` emits a small `{head_hash, count,
+  anchored_at}` object to store outside the runtime (e.g. a git commit), and
+  `audit verify --anchor <file>` checks the live chain head against it. This
+  detects a whole-chain rewrite that internal hash-chain verification alone
+  cannot, because a consistently rebuilt chain still re-derives valid hashes.
+- HTTP API preflight now surfaces `key_age_days` (from the key file mtime) so a
+  stale credential is visible; no rotation threshold is hardcoded.
+
+### Changed
+
+- The per-task HTTP API spend cap is now a strict pre-egress ceiling: before
+  each call the worker refuses if the call's worst-case cost (prompt bytes as
+  an upper bound on input tokens, plus `max_output_tokens` of output) could
+  breach the cap. Previously the cap was checked after the call, permitting one
+  bounded overshoot (see DEFECT-LOG row 6).
+
+### Fixed
+
+- A guided run whose worker cannot authorize (missing/not-live-enabled provider
+  profile) no longer strands the task silently in `LOCAL_IMPLEMENTING` holding
+  its workspace lease. `AuthorizationRequired` is caught mid-orchestration and
+  the task blocks cleanly, which auto-releases the lease (DEFECT-LOG row 4).
+- A lease conflict error now names the owning task, so the operator knows which
+  task to cancel or resume.
+
 ## [0.10.0] - 2026-07-20
 
 ### Added

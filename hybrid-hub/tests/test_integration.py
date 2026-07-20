@@ -119,8 +119,9 @@ class WorkspaceTests(IntegrationBase):
         workspace = Path(manifest["repositories"][0]["workspace"])
         self.assertTrue((workspace / ".git").exists())
         self.assertEqual(manifest["repositories"][0]["base_commit"], subprocess.check_output(["git", "-C", str(project), "rev-parse", "HEAD"], text=True).strip())
-        with self.assertRaises(ConflictError):
+        with self.assertRaises(ConflictError) as caught:
             self.hub.leases.acquire(f"repo:{repo_id}", "other-task")
+        self.assertIn(task["task_id"], str(caught.exception))
         self.assertEqual(self.hub.workspaces.create(task["task_id"], [repo_id])["manifest_hash"], manifest["manifest_hash"])
 
     def test_polyrepo_cross_repository_workspace(self):

@@ -13,7 +13,7 @@ from .cloud import ProviderProfile, ProviderProfileStore
 from .errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
 from .leases import LeaseManager
 from .model_store import load_record, write_record
-from .secrets import read_api_key_file, redact_exact
+from .secrets import api_key_age_days, read_api_key_file, redact_exact
 from .storage import Database
 from .util import bounded_text, sha256_bytes, sha256_json, utc_now
 from .workers import FILE_STOP_MARKER, LocalWorker, _NoRedirect
@@ -114,10 +114,12 @@ class HttpApiWorker:
     def preflight(self) -> dict[str, Any]:
         if self.database.emergency_stopped():
             raise PolicyDenied("emergency stop is active")
-        read_api_key_file(Path(self.config.api_key_file))
+        key_path = Path(self.config.api_key_file)
+        read_api_key_file(key_path)
         report = {
             "adapter": self.config.name, "model": self.config.model, "transport": "https-api",
             "endpoint_origin": self.config.origin, "credential_source": "key-file",
+            "key_age_days": api_key_age_days(key_path),
             "max_task_cost_usd": float(self.config.max_task_cost_usd), "available": True,
         }
         self.audit.append("worker.preflight", report)
@@ -149,6 +151,15 @@ class HttpApiWorker:
             spent = self._accumulated(system_id, task_id)
             if spent >= cap:
                 raise PolicyDenied("per-task API spend cap is exhausted; escalation is a human decision")
+            # Pre-egress worst-case ceiling: refuse before the call whenever the
+            # most this call could possibly cost would breach the cap. Input
+            # tokens can never exceed the prompt's UTF-8 byte length (>=1 byte
+            # per token) and output tokens are bounded by max_output_tokens, so
+            # this bound is a true upper limit. This makes the cap a real
+            # ceiling instead of a post-hoc check that permits one overshoot.
+            worst_case_cost = (len(prompt_bytes) * float(self.config.input_cost_per_mtok) + self.config.max_output_tokens * float(self.config.output_cost_per_mtok)) / 1_000_000
+            if round(spent + worst_case_cost, 8) > cap:
+                raise PolicyDenied("next call could exceed the per-task API spend cap; escalation is a human decision")
             self.audit.append(
                 "worker.cloud-context-sent",
                 {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "prompt_sha256": sha256_bytes(prompt_bytes), "prompt_bytes": len(prompt_bytes)},
