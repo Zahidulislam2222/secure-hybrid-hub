@@ -11,7 +11,7 @@ from .hub import Hub
 from .policy import RANK, compose
 from .topology import Topology
 from .model_select import selected_transport
-from .http_api_worker import DEFAULT_ANTHROPIC_VERSION, HTTP_API_ADAPTERS, HttpApiConfig, HttpApiWorker
+from .http_api_worker import DEFAULT_ANTHROPIC_VERSION, DEFAULT_FRAMING_TOKEN_OVERHEAD, HTTP_API_ADAPTERS, HttpApiConfig, HttpApiWorker
 from .subscription_worker import SUBSCRIPTION_ADAPTERS, SubscriptionCliConfig, SubscriptionCliWorker
 from .workers import LocalAdapterConfig, LocalWorker
 
@@ -87,6 +87,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--input-cost-per-mtok", type=float, help="input token price in USD per million tokens (required for HTTP API adapters)")
     run.add_argument("--output-cost-per-mtok", type=float, help="output token price in USD per million tokens (required for HTTP API adapters)")
     run.add_argument("--max-task-cost-usd", type=float, help="hard per-task API spend cap in USD (required for HTTP API adapters)")
+    run.add_argument("--framing-token-overhead", type=int, help="input tokens the vendor bills for request framing, added to the worst-case spend bound")
     run.add_argument("--model")
     run.add_argument("--timeout", type=int, help="worker timeout in seconds (defaults to the stored selection's value, else 300)")
     run.add_argument("--executable", help="absolute local ollama/ollama.exe path")
@@ -379,6 +380,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         endpoint, bridge, cli_executable = args.endpoint, args.http_bridge_executable, args.cli_executable
         api_base_url, api_key_file, api_version = args.api_base_url, args.api_key_file, args.api_version
         input_cost, output_cost, max_task_cost = args.input_cost_per_mtok, args.output_cost_per_mtok, args.max_task_cost_usd
+        framing_overhead = args.framing_token_overhead
         timeout = args.timeout
         if args.through == "verified":
             if not model:
@@ -395,6 +397,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                     input_cost = input_cost if input_cost is not None else selection.get("input_cost_per_mtok")
                     output_cost = output_cost if output_cost is not None else selection.get("output_cost_per_mtok")
                     max_task_cost = max_task_cost if max_task_cost is not None else selection.get("max_task_cost_usd")
+                    framing_overhead = framing_overhead if framing_overhead is not None else selection.get("framing_token_overhead")
                     timeout = timeout if timeout is not None else selection.get("timeout")
                     hub.audit.append("model.selection-used", {"model_id": selection["model_id"], "adapter": adapter, "provider_model": model}, system_id=args.system)
             if not model:
@@ -413,7 +416,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                     raise PolicyDenied("HTTP API adapters support guided plans only")
                 if not api_base_url or not api_key_file or input_cost is None or output_cost is None or max_task_cost is None:
                     raise AuthorizationRequired("HTTP API adapters require --api-base-url, --api-key-file, --input-cost-per-mtok, --output-cost-per-mtok, and --max-task-cost-usd (or a stored model selection carrying them)")
-                api_config = HttpApiConfig(adapter, api_base_url, model, api_key_file, input_cost, output_cost, max_task_cost, api_version=api_version or DEFAULT_ANTHROPIC_VERSION, timeout=timeout)
+                api_config = HttpApiConfig(adapter, api_base_url, model, api_key_file, input_cost, output_cost, max_task_cost, api_version=api_version or DEFAULT_ANTHROPIC_VERSION, timeout=timeout, framing_token_overhead=framing_overhead if framing_overhead is not None else DEFAULT_FRAMING_TOKEN_OVERHEAD)
                 worker = HttpApiWorker(hub.database, hub.audit, hub.leases, api_config, hub.provider_profiles)
             else:
                 config = LocalAdapterConfig(adapter, endpoint, model, timeout, executable=args.executable, http_bridge_executable=bridge)

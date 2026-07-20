@@ -20,17 +20,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The per-task HTTP API spend cap is now a strict pre-egress ceiling: before
-  each call the worker refuses if the call's worst-case cost (prompt bytes as
-  an upper bound on input tokens, plus `max_output_tokens` of output) could
-  breach the cap. Previously the cap was checked after the call, permitting one
-  bounded overshoot (see DEFECT-LOG row 6).
+  each call the worker refuses if the call's worst-case cost (prompt bytes plus
+  a framing-token allowance as an upper bound on input tokens, plus
+  `max_output_tokens` of output) could breach the cap. Previously the cap was
+  checked after the call, permitting one bounded overshoot. The post-call check
+  is retained as a backstop for a vendor that bills more than the bound
+  predicted.
 
 ### Fixed
 
+- Real-money metering gap: every billed (2xx) response is now metered against
+  the spend cap before its content is judged. Previously a truncated
+  (`stop_reason=="max_tokens"`), oversized, malformed, or usage-less success
+  raised before the spend record was written, so the vendor billed for a call
+  the hub recorded as $0 — and because the orchestrator retries adapter
+  failures, a model repeatedly hitting the output limit could bill on every
+  attempt while the cap never filled. Response bodies are now read by a
+  non-raising interpreter, and any unforeseen exception from a body shape is
+  converted into a failure raised only after the call has been metered.
+- A response whose body could not be read, or whose connection failed to close,
+  is no longer treated as a request that never happened. The vendor bills at
+  generation, not at delivery, so once a status is in hand the call is metered:
+  an unreadable body (including a mid-read `IncompleteRead`, which is not an
+  `OSError` and previously escaped the worker and the orchestrator both) at the
+  worst case, and a complete body whose connection merely failed to close at its
+  reported usage.
+- A request that times out with the prompt already fully sent is now charged at
+  the worst case. A non-streaming vendor returns headers only once generation
+  finishes, so that timeout is the shape of a call that was generated and
+  billed; leaving it unmetered let the orchestrator re-drive the same slow
+  request on every repair attempt, billing each time against a ledger that read
+  $0. Metering it makes those retries self-limiting. The two timeout phases are
+  distinguished: a connect, TLS, or send-phase timeout never reached the vendor
+  and is not charged, because charging it would let a passing network fault
+  exhaust a real budget on $0 of actual spend. That case, and any other transport
+  failure without a status, is audited as `worker.egress-unaccounted` rather
+  than passing silently.
+- Policy refusals raised from inside the HTTP opener — the forbidden-redirect
+  control among them — keep their own meaning instead of being reported as
+  transport failures, so a deliberate refusal blocks the task rather than being
+  retried.
+- A billed call whose spend record cannot be written now blocks the task instead
+  of raising a retryable adapter error, since retrying with metering known to be
+  broken is how unbounded billing happens.
+- Vendor-reported token counts are now bounded before they are used. JSON
+  integers are unbounded, and an absurd count either overflowed the cost
+  arithmetic (escaping before the spend record was written, on a call the vendor
+  had already billed) or persisted a spend total that permanently exhausted the
+  task. Counts above a sanity ceiling are refused and charged at the worst case.
+- The whole metering step, not only response parsing, is now guarded: any
+  failure between a billed response and its spend record blocks the task rather
+  than escaping, and the message names the recovery.
+- A response reporting usage that cannot be true — zero input tokens, or zero
+  output tokens alongside returned text — is no longer taken at face value. Such
+  a report would hold the spend total at $0 and disable the cap; it is now
+  charged at the worst-case bound and the run fails.
+- The worst-case input bound used by the spend ceiling now adds a framing-token
+  allowance, because vendors bill request framing (role markers, message
+  envelope) on top of the prompt text; the prompt's byte length alone was not a
+  true upper bound. The allowance is configurable per adapter
+  (`--framing-token-overhead` on `run` and `model select`, stored with the model
+  selection; default 64).
 - A guided run whose worker cannot authorize (missing/not-live-enabled provider
   profile) no longer strands the task silently in `LOCAL_IMPLEMENTING` holding
   its workspace lease. `AuthorizationRequired` is caught mid-orchestration and
-  the task blocks cleanly, which auto-releases the lease (DEFECT-LOG row 4).
+  the task blocks cleanly, which auto-releases the lease.
 - A lease conflict error now names the owning task, so the operator knows which
   task to cancel or resume.
 
@@ -124,5 +178,6 @@ workflows (Phases 0–11 of the build plan, verified with synthetic fixtures).
 - Native Windows now fails at startup with a clear "requires Linux, WSL2, or
   macOS" message instead of a raw `ModuleNotFoundError` traceback.
 
+[0.11.0]: https://github.com/Zahidulislam2222/secure-hybrid-hub/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Zahidulislam2222/secure-hybrid-hub/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Zahidulislam2222/secure-hybrid-hub/releases/tag/v0.9.0

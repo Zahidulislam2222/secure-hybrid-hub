@@ -170,7 +170,7 @@ def _probe_plan() -> dict[str, Any]:
     }
 
 
-def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_bridge_executable: str | None, timeout: int, cli_executable: str | None = None, api_base_url: str | None = None, api_key_file: str | None = None, api_version: str | None = None, input_cost_per_mtok: float | None = None, output_cost_per_mtok: float | None = None, max_task_cost_usd: float | None = None) -> dict[str, Any]:
+def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_bridge_executable: str | None, timeout: int, cli_executable: str | None = None, api_base_url: str | None = None, api_key_file: str | None = None, api_version: str | None = None, input_cost_per_mtok: float | None = None, output_cost_per_mtok: float | None = None, max_task_cost_usd: float | None = None, framing_token_overhead: int | None = None) -> dict[str, Any]:
     """Real one-packet synthetic evaluation in a throwaway runtime. The counts
     recorded as evaluation evidence come from an actual guided run, never from
     catalog claims or model confidence."""
@@ -231,6 +231,8 @@ def run_local_probe(provider_model: str, adapter: str, *, endpoint: str, http_br
                 "--input-cost-per-mtok", str(input_cost_per_mtok), "--output-cost-per-mtok", str(output_cost_per_mtok),
                 "--max-task-cost-usd", str(max_task_cost_usd),
             ]
+            if framing_token_overhead is not None:
+                arguments += ["--framing-token-overhead", str(framing_token_overhead)]
             if api_version:
                 arguments += ["--api-version", api_version]
         else:
@@ -301,6 +303,7 @@ def select_model(
     input_cost_per_mtok: float | None = None,
     output_cost_per_mtok: float | None = None,
     max_task_cost_usd: float | None = None,
+    framing_token_overhead: int | None = None,
     probe: Callable[..., dict[str, Any]] = run_local_probe,
 ) -> dict[str, Any]:
     require_id(actor, "actor")
@@ -319,7 +322,7 @@ def select_model(
     if existing is None or existing.get("status") != "approved":
         if existing is None:
             models.registry.discover(system_id, model["definition"], actor)
-        evidence = probe(model["provider_model"], adapter, endpoint=endpoint, http_bridge_executable=http_bridge_executable, timeout=timeout, cli_executable=cli_executable, api_base_url=api_base_url, api_key_file=api_key_file, api_version=api_version, input_cost_per_mtok=input_cost_per_mtok, output_cost_per_mtok=output_cost_per_mtok, max_task_cost_usd=max_task_cost_usd)
+        evidence = probe(model["provider_model"], adapter, endpoint=endpoint, http_bridge_executable=http_bridge_executable, timeout=timeout, cli_executable=cli_executable, api_base_url=api_base_url, api_key_file=api_key_file, api_version=api_version, input_cost_per_mtok=input_cost_per_mtok, output_cost_per_mtok=output_cost_per_mtok, max_task_cost_usd=max_task_cost_usd, framing_token_overhead=framing_token_overhead)
         probed = True
         models.registry.record_evaluation(system_id, model_id, evidence, actor)
         models.registry.approve(system_id, model_id, actor)
@@ -350,6 +353,7 @@ def select_model(
         "input_cost_per_mtok": input_cost_per_mtok,
         "output_cost_per_mtok": output_cost_per_mtok,
         "max_task_cost_usd": max_task_cost_usd,
+        "framing_token_overhead": framing_token_overhead,
         "timeout": timeout,
         "updated_at": utc_now(),
     }

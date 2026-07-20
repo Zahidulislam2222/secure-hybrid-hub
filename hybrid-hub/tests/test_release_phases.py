@@ -110,6 +110,22 @@ class OrchestrationTests(ReleaseBase):
         self.assertEqual(len(report["quality_runs"]), 3)
         self.assertIn("return True", (workspace / "app.py").read_text())
 
+    def test_non_guided_authorization_failure_blocks_and_releases_the_lease(self):
+        # The guided path is covered in test_http_api_worker.py; complete() has
+        # its own AuthorizationRequired handler and must behave identically —
+        # terminal BLOCKED_POLICY whose final_report frees the workspace lease,
+        # so a re-run on the same repo is not blocked (DEFECT-LOG row 4).
+        _, _, _, task_id, _ = self.task("noauth")
+
+        def unauthorized(*_):
+            raise AuthorizationRequired("vendor API egress requires an approved provider profile")
+
+        report = self.hub.orchestrator.complete(task_id, unauthorized, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
+        self.assertIn("authorization required", report["task"]["reason"])
+        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == task_id], [])
+
     def test_blocked_worker_pauses_precisely_and_is_not_verified(self):
         _, _, _, task_id, _ = self.task("pause")
         def blocked(*_):

@@ -64,6 +64,7 @@ def parser() -> argparse.ArgumentParser:
     select.add_argument("--input-cost-per-mtok", type=float, help="input token price in USD per million tokens for API platforms")
     select.add_argument("--output-cost-per-mtok", type=float, help="output token price in USD per million tokens for API platforms")
     select.add_argument("--max-task-cost-usd", type=float, help="hard per-task API spend cap in USD for API platforms")
+    select.add_argument("--framing-token-overhead", type=int, help="input tokens the vendor bills for request framing, added to the worst-case spend bound")
     select.add_argument("--timeout", type=int, default=300)
 
     route = actions.add_parser("route")

@@ -55,6 +55,7 @@ def handle(args: Any) -> Any:
             cli_executable=args.cli_executable, api_base_url=args.api_base_url, api_key_file=args.api_key_file,
             api_version=args.api_version, input_cost_per_mtok=args.input_cost_per_mtok,
             output_cost_per_mtok=args.output_cost_per_mtok, max_task_cost_usd=args.max_task_cost_usd,
+            framing_token_overhead=args.framing_token_overhead,
         )
     if action == "route":
         return models.router.plan(args.system_id, args.role, args.classification, require_structured_output=not args.allow_unstructured)

@@ -111,6 +111,12 @@ transport costs real money per token, so it is fail-closed twice over:
    Token usage from each response is metered and audited
    (`worker.tokens-metered`); when the accumulated task spend reaches the
    cap the hub blocks and asks the human — it never switches providers.
+   The cap is enforced before egress against the call's worst-case cost, so
+   no call that could breach it is made. That bound adds an allowance for
+   the tokens a vendor bills for request framing; if a vendor's observed
+   input billing exceeds the prompt's own byte count by more than the
+   default, raise `--framing-token-overhead` (also accepted by
+   `model select`, which stores it with the selection).
 
 The API key is read from a private single-line key file
 (`--api-key-file`, must be `chmod 600`) at call time. Keys are never read
