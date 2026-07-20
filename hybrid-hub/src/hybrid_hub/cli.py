@@ -11,7 +11,7 @@ from .hub import Hub
 from .policy import RANK, compose
 from .topology import Topology
 from .model_select import selected_transport
-from .http_api_worker import DEFAULT_ANTHROPIC_VERSION, DEFAULT_FRAMING_TOKEN_OVERHEAD, HTTP_API_ADAPTERS, HttpApiConfig, HttpApiWorker
+from .http_api_worker import DEFAULT_ANTHROPIC_VERSION, HTTP_API_ADAPTERS, HttpApiConfig, HttpApiWorker
 from .subscription_worker import SUBSCRIPTION_ADAPTERS, SubscriptionCliConfig, SubscriptionCliWorker
 from .workers import LocalAdapterConfig, LocalWorker
 
@@ -416,7 +416,12 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                     raise PolicyDenied("HTTP API adapters support guided plans only")
                 if not api_base_url or not api_key_file or input_cost is None or output_cost is None or max_task_cost is None:
                     raise AuthorizationRequired("HTTP API adapters require --api-base-url, --api-key-file, --input-cost-per-mtok, --output-cost-per-mtok, and --max-task-cost-usd (or a stored model selection carrying them)")
-                api_config = HttpApiConfig(adapter, api_base_url, model, api_key_file, input_cost, output_cost, max_task_cost, api_version=api_version or DEFAULT_ANTHROPIC_VERSION, timeout=timeout, framing_token_overhead=framing_overhead if framing_overhead is not None else DEFAULT_FRAMING_TOKEN_OVERHEAD)
+                # Omit the kwarg entirely when unset so HttpApiConfig stays the
+                # single owner of the framing default (it changes what the spend
+                # ceiling permits, so a second default here would be a Rule 12
+                # violation waiting to drift).
+                framing_kwargs = {} if framing_overhead is None else {"framing_token_overhead": framing_overhead}
+                api_config = HttpApiConfig(adapter, api_base_url, model, api_key_file, input_cost, output_cost, max_task_cost, api_version=api_version or DEFAULT_ANTHROPIC_VERSION, timeout=timeout, **framing_kwargs)
                 worker = HttpApiWorker(hub.database, hub.audit, hub.leases, api_config, hub.provider_profiles)
             else:
                 config = LocalAdapterConfig(adapter, endpoint, model, timeout, executable=args.executable, http_bridge_executable=bridge)

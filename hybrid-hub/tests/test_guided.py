@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hybrid_hub.errors import PolicyDenied
+from hybrid_hub.errors import ConflictError, PolicyDenied
 from hybrid_hub.hub import Hub
 
 
@@ -148,6 +148,45 @@ class GuidedOrchestrationTests(unittest.TestCase):
         self.assertEqual(report["task"]["state"], "PAUSED_AUTH")
         self.assertFalse(report["verified"])
         self.assertEqual(called, [])
+
+    def test_worker_resource_conflict_blocks_and_releases_the_workspace_lease(self):
+        # The realistic trigger is the api-spend lease being held by another
+        # task. No handler caught ConflictError, so it escaped complete_guided
+        # and left the task in LOCAL_IMPLEMENTING still holding its workspace
+        # lease — the next run on the repo died on "resource already leased".
+        self.ready()
+
+        def conflicted(*_):
+            raise ConflictError("resource already leased: api-spend:task-other (owned by task-other)")
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, conflicted, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
+        self.assertIn("resource conflict", report["task"]["reason"])
+        self.assertIn("api-spend", report["task"]["reason"])
+        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == self.task_id], [])
+        # Paired negative: the lease is released because the task blocked, not
+        # because complete_guided releases leases unconditionally. A run that
+        # reaches the driver without conflicting still holds its lease while
+        # PAUSED (non-terminal), which the required-research test above proves.
+
+    def test_conflict_after_a_terminal_transition_does_not_raise(self):
+        # The PAUSED_INPUT transition lives inside the same try block, and
+        # state.transition raises ConflictError on an invalid transition. If the
+        # handler transitioned unconditionally it would re-raise from inside
+        # itself. Here the driver drives the task terminal first, then conflicts.
+        self.ready()
+
+        def terminal_then_conflict(task_id, *_):
+            self.hub.tasks.transition(task_id, "BLOCKED_QUALITY", reason="synthetic terminal state")
+            raise ConflictError("resource already leased: api-spend:task-other")
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, terminal_then_conflict, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        # The pre-existing terminal state is preserved, not overwritten.
+        self.assertEqual(report["task"]["state"], "BLOCKED_QUALITY")
+        self.assertIn("synthetic terminal state", report["task"]["reason"])
+        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == self.task_id], [])
 
 
 if __name__ == "__main__":

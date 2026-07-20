@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from .audit import AuditLog, SECRET_PATTERNS
 from .dossier import DossierStore
-from .errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
+from .errors import AdapterError, AuthorizationRequired, ConflictError, PolicyDenied, ValidationError
 from .guided import EvidencePacketBuilder, GuidedPlanStore
 from .quality import QualityRunner
 from .state import TaskManager
@@ -20,6 +20,9 @@ from .workers import FILE_STOP_MARKER
 
 
 Driver = Callable[[str, str, int, str], dict[str, Any]]
+# States from which no further work runs, so final_report releases the task's
+# leases. One owner: both final_report and the ConflictError handlers read it.
+TERMINAL_STATES = frozenset({"VERIFIED", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED", "HUMAN_ACCEPTED"})
 MAX_OPERATIONS = 200
 MAX_OPERATION_BYTES = 1_048_576
 MAX_ATTEMPT_BYTES = 8_388_608
@@ -286,6 +289,18 @@ class Orchestrator:
                 except PolicyDenied as exc:
                     self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
                     return self.final_report(task_id)
+                except ConflictError as exc:
+                    # A resource the worker needs (realistically the api-spend
+                    # lease) is held by another task. Previously unhandled: this
+                    # escaped and stranded the task in LOCAL_IMPLEMENTING still
+                    # holding its workspace lease. Block terminally so
+                    # final_report releases it. Recovery: finish or cancel the
+                    # owning task, then re-run. The state guard matters because
+                    # the PAUSED_INPUT transition above is inside this try and
+                    # raises ConflictError on an invalid transition.
+                    if self.tasks.get(task_id)["state"] not in TERMINAL_STATES:
+                        self.tasks.transition(task_id, "BLOCKED_POLICY", reason=f"resource conflict: {exc}")
+                    return self.final_report(task_id)
                 except (AdapterError, TimeoutError, OSError) as exc:
                     detail = str(exc)[:300]
                     self.audit.append("guided-packet.worker-failed", {"packet_id": packet["packet_id"], "attempt": packet_attempt, "error": type(exc).__name__, "safe_detail": detail}, system_id=task["system_id"], task_id=task_id)
@@ -493,6 +508,12 @@ class Orchestrator:
             except PolicyDenied as exc:
                 self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
                 return self.final_report(task_id)
+            except ConflictError as exc:
+                # See the guided loop: an unhandled ConflictError stranded the
+                # workspace lease. Block terminally so final_report releases it.
+                if self.tasks.get(task_id)["state"] not in TERMINAL_STATES:
+                    self.tasks.transition(task_id, "BLOCKED_POLICY", reason=f"resource conflict: {exc}")
+                return self.final_report(task_id)
             if result.get("status") == "blocked":
                 self.tasks.transition(task_id, "PAUSED_INPUT", reason=result.get("reason", "local worker requires input"))
                 return self.final_report(task_id)
@@ -574,8 +595,7 @@ class Orchestrator:
 
     def final_report(self, task_id: str) -> dict[str, Any]:
         task = self.tasks.get(task_id)
-        terminal = {"VERIFIED", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED", "HUMAN_ACCEPTED"}
-        if self.leases and task["state"] in terminal:
+        if self.leases and task["state"] in TERMINAL_STATES:
             self.leases.release_owner(task_id)
         with self.database.connect() as connection:
             quality = [dict(row) for row in connection.execute("SELECT run_id,scope,passed,evidence_digest,created_at FROM quality_runs WHERE task_id=? ORDER BY created_at", (task_id,)).fetchall()]

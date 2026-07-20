@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A resource conflict raised by a coding worker (for example a contended
+  per-task API spend lease) is now caught by the orchestrator and blocks the
+  task terminally, so the final report releases its workspace lease. Previously
+  the exception escaped orchestration entirely and left the task holding that
+  lease, which made every later run on the same repository fail with
+  `resource already leased` until the stuck task was cancelled by hand.
+- The framing-token allowance now has a single owner. The CLI no longer
+  substitutes its own copy of the default when the flag is omitted.
+
 ## [0.11.0] - 2026-07-20
 
 ### Added

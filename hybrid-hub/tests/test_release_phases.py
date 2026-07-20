@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from hybrid_hub.cloud import ProviderProfile
-from hybrid_hub.errors import AuthorizationRequired, PolicyDenied, ValidationError
+from hybrid_hub.errors import AuthorizationRequired, ConflictError, PolicyDenied, ValidationError
 from hybrid_hub.hub import Hub
 from hybrid_hub.util import sha256_bytes
 
@@ -125,6 +125,25 @@ class OrchestrationTests(ReleaseBase):
         self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
         self.assertIn("authorization required", report["task"]["reason"])
         self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == task_id], [])
+
+    def test_non_guided_resource_conflict_blocks_and_releases_the_lease(self):
+        # complete() had the same gap as complete_guided: no ConflictError
+        # handler, so a contended lease escaped and stranded the workspace
+        # lease in LOCAL_IMPLEMENTING (DEFECT-LOG row 4 shape).
+        _, repo_id, _, task_id, _ = self.task("conflict")
+
+        def conflicted(*_):
+            raise ConflictError("resource already leased: api-spend:task-other (owned by task-other)")
+
+        report = self.hub.orchestrator.complete(task_id, conflicted, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
+        self.assertIn("resource conflict", report["task"]["reason"])
+        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == task_id], [])
+        # The lease is genuinely free, not merely unlisted: another owner can
+        # take the same workspace resource now.
+        self.hub.leases.acquire(f"repo:{repo_id}", "task-successor", ttl_seconds=60)
+        self.hub.leases.release_owner("task-successor")
 
     def test_blocked_worker_pauses_precisely_and_is_not_verified(self):
         _, _, _, task_id, _ = self.task("pause")
