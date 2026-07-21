@@ -25,6 +25,28 @@ class LeaseManager:
                     raise ConflictError(f"resource already leased: {resource}{owned_by}") from exc
                 raise
 
+    def acquire_or_renew(self, resource: str, owner: str, ttl_seconds: int = 300) -> None:
+        """Take the lease, or extend it if this owner already holds it.
+
+        `acquire` is strict: the UNIQUE constraint is on `resource` alone, so
+        it raises even when the caller is the existing holder. That is right
+        for taking a resource and wrong for RE-taking one, which is what
+        recovery does -- a task that ended terminally had its leases released
+        by final_report, but a task resumed from a pause still holds its own.
+        Recovery must work in both cases and must still refuse a resource a
+        DIFFERENT task has taken in the meantime.
+        """
+        now = time.time()
+        with self.database.transaction() as connection:
+            connection.execute("DELETE FROM leases WHERE expires_at<=?", (now,))
+            holder = connection.execute("SELECT owner FROM leases WHERE resource=?", (resource,)).fetchone()
+            if holder is None:
+                connection.execute("INSERT INTO leases VALUES(?,?,?,?)", (resource, owner, utc_now(), now + ttl_seconds))
+                return
+            if holder[0] != owner:
+                raise ConflictError(f"resource already leased: {resource} held by {holder[0]}; cancel or resume that task to release it")
+            connection.execute("UPDATE leases SET expires_at=? WHERE resource=? AND owner=?", (now + ttl_seconds, resource, owner))
+
     def release(self, resource: str, owner: str) -> None:
         with self.database.transaction() as connection:
             connection.execute("DELETE FROM leases WHERE resource=? AND owner=?", (resource, owner))

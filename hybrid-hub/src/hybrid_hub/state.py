@@ -44,6 +44,25 @@ RESUME_TARGETS = {
     "FAILED_INFRA": {"WORKSPACES_READY", "TARGETED_TESTING", "FULL_QUALITY_GATES"},
 }
 
+# States in which a task is done with its workspace, so final_report releases
+# its leases. Lives here because it is state-machine semantics and state.py
+# owns TRANSITIONS/RESUME_TARGETS; orchestrator.py imports it.
+#
+# Deliberately hand-listed, NOT derived from TRANSITIONS. The obvious
+# derivation -- "no outgoing edge except CANCELLED" -- is wrong in both
+# directions, and both errors are dangerous:
+#   * PAUSED_INPUT/PAUSED_AUTH/PAUSED_APPROVAL have NO out-edges (they leave
+#     via resume(), which RESUME_TARGETS governs, not TRANSITIONS) yet must
+#     NOT be terminal. Calling them terminal releases the workspace of a task
+#     the operator intends to resume, letting another task claim the repo out
+#     from under it.
+#   * VERIFIED HAS an out-edge (STAGING_DEPLOYED) yet must BE terminal: the
+#     implementation work is finished and deployment is a separate,
+#     human-gated phase that should not hold the coding workspace.
+# "No further work runs here" is an intent about the workspace, not a fact
+# about the edge table. If you add a state, decide this explicitly.
+TERMINAL_STATES = frozenset({"VERIFIED", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED", "HUMAN_ACCEPTED"})
+
 
 class TaskManager:
     def __init__(self, database: Database, audit: AuditLog, dossier: DossierStore):

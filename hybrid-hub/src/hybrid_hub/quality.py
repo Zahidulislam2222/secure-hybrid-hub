@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .audit import AuditLog, SECRET_PATTERNS, sanitize
+from .audit import CREDENTIAL_EXEMPTION, AuditLog, SECRET_PATTERNS, sanitize
 from .dossier import DossierStore
 from .errors import AdapterError, ConflictError, PolicyDenied, ValidationError
 from .policy import compose
@@ -35,7 +35,10 @@ DESTRUCTIVE_SQL = re.compile(r"(?i)\b(?:DROP\s+(?:TABLE|COLUMN|DATABASE)|TRUNCAT
 SENSITIVE_CONTENT = [
     ("synthetic-canary", re.compile(r"hh_test_CANARY_[A-Z0-9_]+")),
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
-    ("credential-assignment", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)\s*[:=]\s*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|['\"]?(?:placeholder|redacted|test[-_])))['\"]?[^\s,'\";]{8,}")),
+    # Shares audit.CREDENTIAL_EXEMPTION so this cannot drift from the scanner
+    # that gates model output. It previously matched literal placeholders as
+    # PREFIXES, exempting `api_key = "test-<real key>"`.
+    ("credential-assignment", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)\s*[:=]\s*(?!" + CREDENTIAL_EXEMPTION + r")['\"]?[^\s,'\";]{8,}")),
 ]
 CLASSIFICATION_CONTENT = {
     "phi-scan": re.compile(r"(?i)\b(?:patient|medical record|diagnosis|health plan)\b.{0,40}\b(?:name|id|dob|address|email|phone)\b"),

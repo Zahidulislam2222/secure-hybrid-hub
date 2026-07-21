@@ -38,7 +38,13 @@ class SubscriptionConfigTests(unittest.TestCase):
 class SubscriptionWorkerBase(IntegrationBase):
     def setUp(self):
         super().setUp()
-        _, registration = self.register(git=True)
+        # "standard" permits cloud egress. The default fixture profile is
+        # "confidential", which does NOT -- and every test in this file used to
+        # run a no-egress system straight through a vendor-transmitting worker,
+        # because the classification gate was dead code. Tests of normal
+        # operation need a system that is actually allowed to transmit; the
+        # refusal is asserted explicitly below.
+        _, registration = self.register(git=True, profiles=["standard"])
         self.task = self.hub.tasks.create("system-a", "Synthetic subscription worker", "R1", registration["policy"]["policy_hash"], "task-subscription")
         for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED", "WORKSPACES_READY"):
             self.hub.tasks.transition(self.task["task_id"], state)
@@ -103,6 +109,46 @@ class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
         with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")) as process:
             worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         self.assertNotIn("--model", process.call_args.args[0])
+
+
+class ClassificationEgressRefusalTests(IntegrationBase):
+    """The behavioural half of the P1 fix, at the boundary that transmits.
+
+    A unit test on the policy helper proves the helper. This proves that a
+    restricted system is REFUSED by the real worker, before any subprocess is
+    launched -- which is what "the control is enforced" actually means. For
+    seven sessions this was the missing test, and its absence is why a dead
+    control read as a live one.
+    """
+
+    def worker_for(self, profiles, system_id):
+        _, registration = self.register(system_id=system_id, client_id=f"client-{system_id}", git=True, profiles=profiles)
+        task_id = f"task-{system_id}"
+        self.hub.tasks.create(system_id, "Synthetic egress probe", "R1", registration["policy"]["policy_hash"], task_id)
+        for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED", "WORKSPACES_READY"):
+            self.hub.tasks.transition(task_id, state)
+        with patch.object(Path, "is_file", return_value=True):
+            config = SubscriptionCliConfig("claude-subscription-cli", "/usr/bin/claude", "haiku")
+        return SubscriptionCliWorker(self.hub.database, self.hub.audit, self.hub.leases, config), task_id
+
+    def test_restricted_systems_never_reach_the_vendor_cli(self):
+        for profile in ("healthcare", "legal", "high-secret", "confidential", "gdpr", "financial", "production-critical"):
+            with self.subTest(profile=profile):
+                worker, task_id = self.worker_for([profile], f"system-{profile}")
+                with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")) as process:
+                    with self.assertRaises(PolicyDenied):
+                        worker.run_file(task_id, "Generate one synthetic file.")
+                # The refusal must happen BEFORE the vendor process starts.
+                # Raising after the subprocess ran would still have leaked.
+                process.assert_not_called()
+
+    def test_a_permitted_system_still_reaches_the_vendor_cli(self):
+        # Paired positive: without it, a worker that refused unconditionally
+        # would pass every assertion above while breaking the product.
+        worker, task_id = self.worker_for(["standard"], "system-permitted")
+        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")) as process:
+            worker.run_file(task_id, "Generate one synthetic file.")
+        process.assert_called()
 
 
 class CodexSubscriptionWorkerTests(SubscriptionWorkerBase):

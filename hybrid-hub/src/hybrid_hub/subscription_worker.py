@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from typing import Any
 from .audit import AuditLog, SECRET_PATTERNS
 from .errors import AdapterError, PolicyDenied, ValidationError
 from .leases import LeaseManager
+from .policy import require_cloud_egress
 from .storage import Database
 from .util import bounded_text, sha256_bytes, sha256_json, utc_now
 from .workers import LocalWorker
@@ -89,11 +91,20 @@ class SubscriptionCliWorker:
         if self.database.emergency_stopped():
             raise PolicyDenied("emergency stop is active")
         with self.database.connect() as connection:
-            task = connection.execute("SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved FROM tasks JOIN systems USING(system_id) WHERE task_id=?", (task_id,)).fetchone()
+            task = connection.execute("SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved,systems.profiles_json FROM tasks JOIN systems USING(system_id) WHERE task_id=?", (task_id,)).fetchone()
         if not task or task["cancelled"] or not task["approved"]:
             raise PolicyDenied("task unavailable or cancelled")
         if task["state"] not in {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING", "LOCAL_FIXING"}:
             raise PolicyDenied("task state does not permit a subscription file worker run")
+        # Classification egress gate. This adapter ships source to a vendor, so
+        # a system whose profile sets cloud_code_egress False must not reach it.
+        # For seven sessions this check existed in policy.py and was called
+        # from nowhere: `policy.require_action` collided by name with the
+        # unrelated `modifiers.require_action`, so grep made the control look
+        # enforced while healthcare/legal/high-secret systems ran freely here.
+        # Enforced at the worker, not at adapter selection, because this is the
+        # boundary that actually transmits.
+        require_cloud_egress(json.loads(task["profiles_json"]))
         prompt_bytes = prompt.encode("utf-8")
         self.audit.append(
             "worker.cloud-context-sent",

@@ -40,6 +40,18 @@ class WorkspaceManager:
         if existing_manifest.is_file():
             existing = json.loads(existing_manifest.read_text(encoding="utf-8"))
             if existing.get("task_id") == task_id:
+                # Re-take the repo leases before handing back the manifest.
+                # This early return short-circuits the acquire loop below, so
+                # without this a task recovering from a terminal state (whose
+                # leases final_report released) ran against its repositories
+                # holding NOTHING -- another task could take the same repo and
+                # both would drive git worktree/applier writes against one
+                # source concurrently. Releasing on failure and re-acquiring on
+                # recovery are two separate features; only the first shipped.
+                # Renew rather than acquire: a task resumed from a PAUSE still
+                # holds its own leases, and re-taking your own must not fail.
+                for entry in existing.get("repositories", []):
+                    self.leases.acquire_or_renew(f"repo:{entry['repo_id']}", task_id, ttl_seconds=3600)
                 return existing
             raise ConflictError("workspace manifest belongs to another task")
         try:

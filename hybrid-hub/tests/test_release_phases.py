@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from hybrid_hub.cloud import ProviderProfile
 from hybrid_hub.errors import AuthorizationRequired, ConflictError, PolicyDenied, ValidationError
@@ -126,22 +127,155 @@ class OrchestrationTests(ReleaseBase):
         self.assertIn("authorization required", report["task"]["reason"])
         self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == task_id], [])
 
-    def test_non_guided_resource_conflict_blocks_and_releases_the_lease(self):
+    def test_non_guided_resource_conflict_ends_the_task_recoverably_and_frees_the_lease(self):
         # complete() had the same gap as complete_guided: no ConflictError
-        # handler, so a contended lease escaped and stranded the workspace
-        # lease in LOCAL_IMPLEMENTING (DEFECT-LOG row 4 shape).
+        # handler, so a contended host lock escaped and stranded the workspace
+        # lease in LOCAL_IMPLEMENTING (DEFECT-LOG row 4 shape). The contended
+        # resources are host-global ones like ollama:inference, NOT the
+        # per-task api-spend lease, which no second task can hold.
         _, repo_id, _, task_id, _ = self.task("conflict")
 
         def conflicted(*_):
-            raise ConflictError("resource already leased: api-spend:task-other (owned by task-other)")
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
 
         report = self.hub.orchestrator.complete(task_id, conflicted, adapter="codex-local")
         self.assertFalse(report["verified"])
-        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
-        self.assertIn("resource conflict", report["task"]["reason"])
-        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == task_id], [])
-        # The lease is genuinely free, not merely unlisted: another owner can
-        # take the same workspace resource now.
+        # FAILED_INFRA keeps the task recoverable; BLOCKED_POLICY would not be.
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.assertIn("shared resource", report["task"]["reason"])
+        # The lease is genuinely free, not merely unlisted: leases.list() drops
+        # expired rows, so only a real acquire proves release.
+        self.hub.leases.acquire(f"repo:{repo_id}", "task-successor", ttl_seconds=60)
+        self.hub.leases.release_owner("task-successor")
+        # Recovery has to actually run. Asserting that resume() wrote the row
+        # resume() just wrote only restates FAILED_INFRA in RESUME_TARGETS.
+        self.hub.tasks.resume(task_id, "WORKSPACES_READY")
+        held_during_run = []
+
+        def observing_driver(*args, **kwargs):
+            # Sampled INSIDE the run. Asserting after it returns would prove
+            # nothing: a successful re-run ends VERIFIED, which is terminal, so
+            # final_report legitimately releases the lease again on the way out.
+            held_during_run.extend(item["owner"] for item in self.hub.leases.list() if item["resource"] == f"repo:{repo_id}")
+            return self.good_driver(*args, **kwargs)
+
+        rerun = self.hub.orchestrator.complete(task_id, observing_driver, adapter="codex-local")
+        self.assertTrue(rerun["verified"])
+        # Recovery must RE-TAKE the lease it gave up. Without this the re-run
+        # drove the source repo holding nothing, and a second task could take
+        # the same repo and write concurrently.
+        self.assertEqual(set(held_during_run), {task_id})
+
+    def test_a_resumed_run_reaches_the_applier_twice_without_a_uniqueness_collision(self):
+        # REGRESSION, and the one the earlier recovery test missed. Both loops
+        # restart `attempt` at 1 every invocation while implementation_attempts
+        # holds UNIQUE(task_id, adapter, attempt) and the dossier checkpoint
+        # phase must also be unique -- so the FIRST apply of a re-run collided,
+        # raising sqlite3.IntegrityError. Neither loop catches that, so it
+        # escaped orchestration entirely, final_report never ran, and the repo
+        # lease claimed moments earlier stayed held for its full hour: strictly
+        # worse than the strand this branch exists to remove.
+        #
+        # The guided re-run test does NOT cover this -- its driver returns a
+        # shape rejected before apply is reached. This one drives a real apply,
+        # fails infra, resumes, and applies again.
+        _, repo_id, _, task_id, _ = self.task("rerun-applier")
+        calls = []
+
+        def apply_then_infra(task_id_arg, prompt, attempt, role):
+            calls.append(attempt)
+            if len(calls) == 1:
+                # Applies for real (recording the row that later collides), but
+                # the code fails the quality gate, so the run goes to repair.
+                return {"status": "ok", "changed_paths": [f"{repo_id}:app.py"], "operations": [{"repo_id": repo_id, "path": "app.py", "action": "write", "content": "def broken( :\n", "expected_hash": None}]}
+            # The repair round dies on infrastructure, ending the task in
+            # FAILED_INFRA with exactly one apply on record.
+            raise TimeoutError("synthetic worker infrastructure failure")
+
+        first = self.hub.orchestrator.complete(task_id, apply_then_infra, adapter="codex-local")
+        self.assertEqual(first["task"]["state"], "FAILED_INFRA")
+        self.assertEqual(len(first["implementation_attempts"]), 1)
+        self.hub.tasks.resume(task_id, "WORKSPACES_READY")
+
+        def hash_aware_driver(task_id_arg, prompt, attempt, role):
+            # The first run left app.py on disk, so the re-run must supply the
+            # CURRENT hash rather than None (which means "create"). Sending the
+            # right hash is what lets this reach the applier at all.
+            request = json.loads(prompt)
+            repo = request["repositories"][0]
+            current = {item["path"]: item["hash"] for item in request["context_files"] if item["repo_id"] == repo}
+            app = "def add(left, right):\n    return left + right\n"
+            test = "import unittest\nfrom app import add\n\nclass AddTests(unittest.TestCase):\n    def test_adds(self):\n        self.assertEqual(add(2, 3), 5)\n"
+            return {
+                "status": "ok",
+                "changed_paths": [f"{repo}:app.py", f"{repo}:tests/test_app.py"],
+                "operations": [
+                    {"repo_id": repo, "path": "app.py", "action": "write", "content": app, "expected_hash": current.get("app.py")},
+                    {"repo_id": repo, "path": "tests/test_app.py", "action": "write", "content": test, "expected_hash": current.get("tests/test_app.py")},
+                ],
+            }
+
+        rerun = self.hub.orchestrator.complete(task_id, hash_aware_driver, adapter="codex-local")
+        # Both applies are recorded, under distinct keys. Before the sequence
+        # fix this line was never reached: the second apply raised
+        # sqlite3.IntegrityError straight out of complete().
+        recorded = [row["attempt"] for row in rerun["implementation_attempts"]]
+        self.assertEqual(len(recorded), len(set(recorded)), f"duplicate attempt keys: {recorded}")
+        self.assertGreaterEqual(len(recorded), 2, "the re-run never reached the applier")
+        self.assertTrue(rerun["verified"], rerun["task"]["reason"])
+
+    def test_a_resumed_run_refuses_a_repository_another_task_has_taken(self):
+        # PAIRED NEGATIVE for the re-acquire above. An implementation that
+        # re-acquired blindly, or not at all, still passes the positive test --
+        # only this one proves mutual exclusion actually survives recovery.
+        _, repo_id, _, task_id, _ = self.task("conflict-interloper")
+
+        def conflicted(*_):
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        self.hub.orchestrator.complete(task_id, conflicted, adapter="codex-local")
+        self.hub.tasks.resume(task_id, "WORKSPACES_READY")
+        # A different task legitimately claims the repo while ours is parked.
+        self.hub.leases.acquire(f"repo:{repo_id}", "task-competitor", ttl_seconds=600)
+        report = self.hub.orchestrator.complete(task_id, self.good_driver, adapter="codex-local")
+        self.assertFalse(report["verified"], "the re-run ran against a repository held by another task")
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.assertEqual([item["owner"] for item in self.hub.leases.list() if item["resource"] == f"repo:{repo_id}"], ["task-competitor"])
+
+    def test_conflict_while_repairing_also_ends_the_task_recoverably(self):
+        # LOCAL_REPAIRING is reachable on attempt >= 2 and has its own
+        # FAILED_INFRA edge; every other conflict test fires on attempt 1 from
+        # LOCAL_IMPLEMENTING, so this is the only cover for the repair branch.
+        _, repo_id, _, task_id, _ = self.task("conflict-repair")
+        attempts = []
+
+        def bad_then_conflict(task_id_arg, *_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                return {"status": "completed", "operations": [{"op": "write", "repo_id": repo_id, "path": "x.py", "content": "syntax ( error"}]}
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        report = self.hub.orchestrator.complete(task_id, bad_then_conflict, adapter="codex-local")
+        self.assertGreater(len(attempts), 1, "the repair branch was never reached")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.hub.leases.acquire(f"repo:{repo_id}", "task-successor", ttl_seconds=60)
+        self.hub.leases.release_owner("task-successor")
+
+    def test_non_guided_conflict_while_applying_a_result_does_not_strand_the_lease(self):
+        # Symmetry check for the applier branch. No in-tree applier path raises
+        # ConflictError today, so this injects one to pin the contract: an
+        # escape here would strand the workspace lease exactly like the driver
+        # case, and nothing else in the suite covers that branch.
+        _, repo_id, _, task_id, _ = self.task("conflict-apply")
+
+        def conflicting_apply(*_args, **_kwargs):
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        with patch.object(self.hub.orchestrator.applier, "apply", conflicting_apply):
+            report = self.hub.orchestrator.complete(task_id, self.good_driver, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
         self.hub.leases.acquire(f"repo:{repo_id}", "task-successor", ttl_seconds=60)
         self.hub.leases.release_owner("task-successor")
 

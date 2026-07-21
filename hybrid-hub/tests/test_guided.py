@@ -149,44 +149,106 @@ class GuidedOrchestrationTests(unittest.TestCase):
         self.assertFalse(report["verified"])
         self.assertEqual(called, [])
 
-    def test_worker_resource_conflict_blocks_and_releases_the_workspace_lease(self):
-        # The realistic trigger is the api-spend lease being held by another
-        # task. No handler caught ConflictError, so it escaped complete_guided
-        # and left the task in LOCAL_IMPLEMENTING still holding its workspace
-        # lease — the next run on the repo died on "resource already leased".
+    def assertLeaseIsGenuinelyFree(self, resource: str):
+        """Prove release, not mere absence from the listing.
+
+        leases.list() deletes expired rows before returning, so a lease that
+        merely timed out is indistinguishable from one that was released. Only
+        a successful acquire by a different owner proves the resource is free.
+        """
+        self.hub.leases.acquire(resource, "probe-owner", ttl_seconds=60)
+        self.hub.leases.release_owner("probe-owner")
+
+    def test_worker_resource_conflict_ends_the_task_recoverably_and_frees_the_lease(self):
+        # Trigger: the worker lost a race for a host-global lock -- in-tree those
+        # are ollama:inference (workers.py) and subscription:{name}. NOT the
+        # api-spend lease: its key and owner are both the task itself, so no
+        # second task can contend for it. Before the handler existed this escaped
+        # complete_guided and left the task in LOCAL_IMPLEMENTING still holding
+        # its workspace lease.
         self.ready()
 
         def conflicted(*_):
-            raise ConflictError("resource already leased: api-spend:task-other (owned by task-other)")
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
 
         report = self.hub.orchestrator.complete_guided(self.task_id, conflicted, adapter="codex-local")
         self.assertFalse(report["verified"])
-        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
-        self.assertIn("resource conflict", report["task"]["reason"])
-        self.assertIn("api-spend", report["task"]["reason"])
-        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == self.task_id], [])
-        # Paired negative: the lease is released because the task blocked, not
-        # because complete_guided releases leases unconditionally. A run that
-        # reaches the driver without conflicting still holds its lease while
-        # PAUSED (non-terminal), which the required-research test above proves.
+        # FAILED_INFRA, not BLOCKED_POLICY: the latter has no outgoing edge and
+        # no RESUME_TARGETS entry, so it would leave the task unrecoverable --
+        # worse than the strand this handler replaced.
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.assertIn("shared resource", report["task"]["reason"])
+        self.assertLeaseIsGenuinelyFree(f"repo:{self.repo_id}")
+        # Recovery must actually WORK, which is the whole point of choosing a
+        # resumable state. An earlier version of this test stopped after
+        # asserting resume() wrote the row resume() had just written -- a
+        # tautology that restates FAILED_INFRA in RESUME_TARGETS and passed
+        # while the re-run below died on a duplicate guided checkpoint
+        # (sqlite3.IntegrityError, driver never called, task wedged in
+        # LOCAL_IMPLEMENTING). Drive the recovery the reason string advertises.
+        self.hub.tasks.resume(self.task_id, "WORKSPACES_READY")
+        calls = []
+
+        def succeeding(_task_id, packet, *_args, **_kwargs):
+            calls.append(packet)
+            return {"status": "completed", "changed_paths": [], "summary": "ok"}
+
+        rerun = self.hub.orchestrator.complete_guided(self.task_id, succeeding, adapter="codex-local")
+        self.assertTrue(calls, "the re-run never reached the driver")
+        self.assertNotIn(rerun["task"]["state"], {"LOCAL_IMPLEMENTING", "FAILED_INFRA"})
+
+    def test_a_paused_run_keeps_its_workspace_lease(self):
+        # PAIRED NEGATIVE for the test above. Without this, an implementation
+        # that released leases unconditionally would pass every conflict test.
+        # A pause is non-terminal and resumable, so the task must KEEP its
+        # workspace -- releasing it would let another task claim the repo out
+        # from under a run the operator intends to resume.
+        self.ready()
+
+        def pausing(*_):
+            return {"status": "blocked", "reason": "needs a human decision", "changed_paths": []}
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, pausing, adapter="codex-local")
+        self.assertEqual(report["task"]["state"], "PAUSED_INPUT")
+        held = [item["resource"] for item in self.hub.leases.list() if item["owner"] == self.task_id]
+        self.assertIn(f"repo:{self.repo_id}", held)
+        with self.assertRaises(ConflictError):
+            self.hub.leases.acquire(f"repo:{self.repo_id}", "probe-owner", ttl_seconds=60)
+
+    def test_conflict_from_a_state_with_no_failed_infra_edge_does_not_raise(self):
+        # The handler shares its try block with a tasks.transition call, and
+        # transition() raises ConflictError on an ILLEGAL move -- so a handler
+        # that transitions unconditionally re-raises the exception it exists to
+        # absorb. Guarding on "is terminal" is NOT sufficient: PAUSED_INPUT is
+        # non-terminal and has no FAILED_INFRA edge. This drives the task there
+        # first, which is a legal move from LOCAL_IMPLEMENTING, then conflicts.
+        self.ready()
+
+        def paused_then_conflict(task_id, *_):
+            self.hub.tasks.transition(task_id, "PAUSED_INPUT", reason="synthetic pause")
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, paused_then_conflict, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        # State preserved, no exception escaped, and the pause keeps its lease.
+        self.assertEqual(report["task"]["state"], "PAUSED_INPUT")
+        self.assertIn("synthetic pause", report["task"]["reason"])
+        self.assertIn(f"repo:{self.repo_id}", [item["resource"] for item in self.hub.leases.list() if item["owner"] == self.task_id])
 
     def test_conflict_after_a_terminal_transition_does_not_raise(self):
-        # The PAUSED_INPUT transition lives inside the same try block, and
-        # state.transition raises ConflictError on an invalid transition. If the
-        # handler transitioned unconditionally it would re-raise from inside
-        # itself. Here the driver drives the task terminal first, then conflicts.
+        # The other half of the guard: already-terminal states also have no
+        # FAILED_INFRA edge, and must not be overwritten.
         self.ready()
 
         def terminal_then_conflict(task_id, *_):
             self.hub.tasks.transition(task_id, "BLOCKED_QUALITY", reason="synthetic terminal state")
-            raise ConflictError("resource already leased: api-spend:task-other")
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
 
         report = self.hub.orchestrator.complete_guided(self.task_id, terminal_then_conflict, adapter="codex-local")
         self.assertFalse(report["verified"])
-        # The pre-existing terminal state is preserved, not overwritten.
         self.assertEqual(report["task"]["state"], "BLOCKED_QUALITY")
         self.assertIn("synthetic terminal state", report["task"]["reason"])
-        self.assertEqual([item for item in self.hub.leases.list() if item["owner"] == self.task_id], [])
+        self.assertLeaseIsGenuinelyFree(f"repo:{self.repo_id}")
 
 
 if __name__ == "__main__":

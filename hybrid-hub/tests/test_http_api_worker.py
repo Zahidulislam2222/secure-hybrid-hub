@@ -111,7 +111,9 @@ class HttpApiConfigTests(unittest.TestCase):
 class HttpApiWorkerBase(IntegrationBase):
     def setUp(self):
         super().setUp()
-        _, registration = self.register(git=True)
+        # See test_subscription_worker: "standard" permits cloud egress, the
+        # default "confidential" does not. This worker POSTs source to a vendor.
+        _, registration = self.register(git=True, profiles=["standard"])
         self.task = self.hub.tasks.create("system-a", "Synthetic HTTP API worker", "R1", registration["policy"]["policy_hash"], "task-http-api")
         for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED", "WORKSPACES_READY"):
             self.hub.tasks.transition(self.task["task_id"], state)
@@ -134,6 +136,50 @@ class HttpApiWorkerBase(IntegrationBase):
         with self.hub.database.connect() as connection:
             rows = connection.execute("SELECT payload_json FROM audit_events WHERE event_type=? ORDER BY event_id", (event,)).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+
+class HttpApiClassificationEgressTests(HttpApiWorkerBase):
+    """Behavioural proof for the worker that transmits over HTTPS and spends money.
+
+    Its sibling in test_subscription_worker covers the CLI adapters. This one
+    matters more: a leak here also costs money and reads a real credential, so
+    the refusal has to land before the POST, before the key file is read, and
+    before any metering. Asserting only that the module MENTIONS the control
+    would pass with the call sitting after the request.
+    """
+
+    def restricted_task(self, profile, system_id):
+        _, registration = self.register(system_id=system_id, client_id=f"client-{system_id}", git=True, profiles=[profile])
+        task_id = f"task-{system_id}"
+        self.hub.tasks.create(system_id, "Synthetic egress probe", "R1", registration["policy"]["policy_hash"], task_id)
+        for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED", "WORKSPACES_READY"):
+            self.hub.tasks.transition(task_id, state)
+        self.approve_provider(system_id=system_id)
+        return task_id
+
+    def test_restricted_systems_never_reach_the_vendor_endpoint(self):
+        for profile in ("healthcare", "legal", "high-secret", "confidential", "gdpr", "financial", "production-critical"):
+            with self.subTest(profile=profile):
+                task_id = self.restricted_task(profile, f"sys-{profile}")
+                worker = self.worker()
+                with patch("hybrid_hub.http_api_worker._http_post") as post, \
+                        patch("hybrid_hub.http_api_worker.read_api_key_file") as key:
+                    with self.assertRaises(PolicyDenied):
+                        worker.run_file(task_id, "Generate one synthetic file.")
+                    post.assert_not_called()
+                    # The credential is never even read for a denied system.
+                    key.assert_not_called()
+                # And nothing was billed.
+                self.assertEqual(self.audit_events("worker.api-call-metered"), [])
+
+    def test_a_permitted_system_still_reaches_the_vendor_endpoint(self):
+        # Paired positive: a worker that refused unconditionally would satisfy
+        # every assertion above while silently disabling the paid tier.
+        self.approve_provider()
+        worker = self.worker()
+        with patch("hybrid_hub.http_api_worker._http_post", return_value=(200, anthropic_body("```python\ndef ready():\n    return True\n```\n"), "")) as post:
+            worker.run_file(self.task["task_id"], "Generate one synthetic file.")
+        post.assert_called()
 
 
 class HttpApiWorkerTests(HttpApiWorkerBase):

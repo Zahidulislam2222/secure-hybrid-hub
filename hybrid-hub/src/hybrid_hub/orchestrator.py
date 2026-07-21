@@ -13,16 +13,19 @@ from .dossier import DossierStore
 from .errors import AdapterError, AuthorizationRequired, ConflictError, PolicyDenied, ValidationError
 from .guided import EvidencePacketBuilder, GuidedPlanStore
 from .quality import QualityRunner
-from .state import TaskManager
+from .state import TERMINAL_STATES, TRANSITIONS, TaskManager
 from .storage import Database
 from .util import atomic_write, canonical_json, sha256_bytes, sha256_json, utc_now
 from .workers import FILE_STOP_MARKER
 
 
 Driver = Callable[[str, str, int, str], dict[str, Any]]
-# States from which no further work runs, so final_report releases the task's
-# leases. One owner: both final_report and the ConflictError handlers read it.
-TERMINAL_STATES = frozenset({"VERIFIED", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED", "HUMAN_ACCEPTED"})
+# Every adapter the hub will accept. Hoisted out of ChangeApplier.apply so the
+# set has one owner and can be asserted against: SUPPORTED_ADAPTERS is a name
+# allowlist and nothing more -- it deliberately does NOT decide whether an
+# adapter may transmit. That is the classification egress policy's job, and
+# conflating the two is what let restricted systems reach a vendor.
+SUPPORTED_ADAPTERS = frozenset({"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli", "anthropic-api", "openai-compatible-api", "synthetic-acceptance"})
 MAX_OPERATIONS = 200
 MAX_OPERATION_BYTES = 1_048_576
 MAX_ATTEMPT_BYTES = 8_388_608
@@ -43,7 +46,7 @@ class ImplementationApplier:
         self.dossier = dossier
 
     def apply(self, task_id: str, adapter: str, attempt: int, request_hash: str, result: dict[str, Any], *, allowed_scope: dict[str, list[str]] | None = None, exact_scope: bool = False) -> dict[str, Any]:
-        if adapter not in {"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli", "anthropic-api", "openai-compatible-api", "synthetic-acceptance"}:
+        if adapter not in SUPPORTED_ADAPTERS:
             raise ValidationError("implementation adapter identity is invalid")
         if result.get("status") not in {"ok", "blocked", "failed"}:
             raise AdapterError("implementation status is invalid")
@@ -108,9 +111,22 @@ class ImplementationApplier:
             task = connection.execute("SELECT system_id,classification,policy_hash FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not task:
                 raise ValidationError("unknown task")
-            connection.execute("INSERT INTO implementation_attempts VALUES(?,?,?,?,?,?,?,?,?,?)", (attempt_id, task_id, adapter, attempt, "applied", request_hash, result_hash, self.database.json(proposed_paths), diff_hash, utc_now()))
-            checkpoint = self.dossier.checkpoint(task["system_id"], f"implementation-{attempt}", "LOCAL_IMPLEMENTING", {"actor": adapter, "policy_hash": task["policy_hash"], "classification": task["classification"], "evidence": [result_hash, diff_hash], "changed_paths": proposed_paths, "unresolved_risks": []}, task_id=task_id, connection=connection)
-            self.audit.append("implementation.applied", {"attempt_id": attempt_id, "adapter": adapter, "attempt": attempt, "result_hash": result_hash, "diff_hash": diff_hash, "changed_paths": proposed_paths, "checkpoint_hash": checkpoint}, system_id=task["system_id"], task_id=task_id, connection=connection)
+            # Persisted sequence, not the in-run attempt number. Both loops
+            # restart `attempt` at 1 on every invocation, while the table holds
+            # UNIQUE(task_id, adapter, attempt) and the checkpoint phase below
+            # must also be unique. So a task that is resumed and re-run -- the
+            # recovery FAILED_INFRA exists to permit -- collided here on its
+            # FIRST apply, raising sqlite3.IntegrityError, which neither loop
+            # catches: it escaped orchestration entirely, so final_report never
+            # ran and the workspace lease claimed moments earlier stayed held
+            # for its full hour. Counting existing rows makes the number
+            # monotonic across runs, the same way TaskManager.transition
+            # disambiguates repeated states. The in-run attempt is kept in the
+            # audit payload, where it is diagnostic rather than a key.
+            sequence = connection.execute("SELECT COUNT(*) FROM implementation_attempts WHERE task_id=? AND adapter=?", (task_id, adapter)).fetchone()[0] + 1
+            connection.execute("INSERT INTO implementation_attempts VALUES(?,?,?,?,?,?,?,?,?,?)", (attempt_id, task_id, adapter, sequence, "applied", request_hash, result_hash, self.database.json(proposed_paths), diff_hash, utc_now()))
+            checkpoint = self.dossier.checkpoint(task["system_id"], f"implementation-{sequence}", "LOCAL_IMPLEMENTING", {"actor": adapter, "policy_hash": task["policy_hash"], "classification": task["classification"], "evidence": [result_hash, diff_hash], "changed_paths": proposed_paths, "unresolved_risks": []}, task_id=task_id, connection=connection)
+            self.audit.append("implementation.applied", {"attempt_id": attempt_id, "adapter": adapter, "attempt": attempt, "sequence": sequence, "result_hash": result_hash, "diff_hash": diff_hash, "changed_paths": proposed_paths, "checkpoint_hash": checkpoint}, system_id=task["system_id"], task_id=task_id, connection=connection)
         return {"status": "ok", "attempt_id": attempt_id, "changed_paths": proposed_paths, "diff_hash": diff_hash, "result_hash": result_hash}
 
     @staticmethod
@@ -226,6 +242,17 @@ class Orchestrator:
         task = self.tasks.get(task_id)
         if task["state"] != "WORKSPACES_READY":
             raise PolicyDenied("guided completion requires WORKSPACES_READY")
+        try:
+            self._claim_workspaces(task_id)
+        except ConflictError as exc:
+            # Another task holds a repo this run needs. Ending here rather than
+            # letting it escape is the same contract the driver loop enforces:
+            # an unhandled ConflictError strands the task mid-run. WORKSPACES_READY
+            # has a FAILED_INFRA edge, so this is recoverable once the other
+            # task finishes. final_report releases by owner, so the competitor's
+            # lease is untouched.
+            self._fail_on_resource_conflict(task_id, exc)
+            return self.final_report(task_id)
         modifier_row = self.modifiers.for_task(task_id) if self.modifiers else None
         if modifier_row:
             max_repairs = min(max_repairs, modifier_row["modifier"]["max_repairs"])
@@ -290,16 +317,7 @@ class Orchestrator:
                     self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
                     return self.final_report(task_id)
                 except ConflictError as exc:
-                    # A resource the worker needs (realistically the api-spend
-                    # lease) is held by another task. Previously unhandled: this
-                    # escaped and stranded the task in LOCAL_IMPLEMENTING still
-                    # holding its workspace lease. Block terminally so
-                    # final_report releases it. Recovery: finish or cancel the
-                    # owning task, then re-run. The state guard matters because
-                    # the PAUSED_INPUT transition above is inside this try and
-                    # raises ConflictError on an invalid transition.
-                    if self.tasks.get(task_id)["state"] not in TERMINAL_STATES:
-                        self.tasks.transition(task_id, "BLOCKED_POLICY", reason=f"resource conflict: {exc}")
+                    self._fail_on_resource_conflict(task_id, exc)
                     return self.final_report(task_id)
                 except (AdapterError, TimeoutError, OSError) as exc:
                     detail = str(exc)[:300]
@@ -481,6 +499,17 @@ class Orchestrator:
         task = self.tasks.get(task_id)
         if task["state"] != "WORKSPACES_READY":
             raise PolicyDenied("orchestrated completion requires WORKSPACES_READY")
+        try:
+            self._claim_workspaces(task_id)
+        except ConflictError as exc:
+            # Another task holds a repo this run needs. Ending here rather than
+            # letting it escape is the same contract the driver loop enforces:
+            # an unhandled ConflictError strands the task mid-run. WORKSPACES_READY
+            # has a FAILED_INFRA edge, so this is recoverable once the other
+            # task finishes. final_report releases by owner, so the competitor's
+            # lease is untouched.
+            self._fail_on_resource_conflict(task_id, exc)
+            return self.final_report(task_id)
         self.tasks.transition(task_id, "LOCAL_IMPLEMENTING")
         seen_diffs: set[str] = set()
         last_quality: dict[str, Any] | None = None
@@ -509,10 +538,7 @@ class Orchestrator:
                 self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
                 return self.final_report(task_id)
             except ConflictError as exc:
-                # See the guided loop: an unhandled ConflictError stranded the
-                # workspace lease. Block terminally so final_report releases it.
-                if self.tasks.get(task_id)["state"] not in TERMINAL_STATES:
-                    self.tasks.transition(task_id, "BLOCKED_POLICY", reason=f"resource conflict: {exc}")
+                self._fail_on_resource_conflict(task_id, exc)
                 return self.final_report(task_id)
             if result.get("status") == "blocked":
                 self.tasks.transition(task_id, "PAUSED_INPUT", reason=result.get("reason", "local worker requires input"))
@@ -528,6 +554,13 @@ class Orchestrator:
                 applied = self.applier.apply(task_id, adapter, attempt, request_hash, result)
             except PolicyDenied as exc:
                 self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
+                return self.final_report(task_id)
+            except ConflictError as exc:
+                # Symmetry with the guided loop, whose try already covers apply.
+                # No in-tree applier path raises ConflictError today, but apply
+                # reaches the dossier and guided-plan stores, and an escape here
+                # strands the workspace lease exactly like the driver case did.
+                self._fail_on_resource_conflict(task_id, exc)
                 return self.final_report(task_id)
             except AdapterError:
                 if attempt == attempts:
@@ -593,6 +626,77 @@ class Orchestrator:
             self.audit.append("release.evidence-ready", {"release_id": release_id, "manifest_hash": material["manifest_hash"], "repositories": repositories}, system_id=task["system_id"], task_id=task_id, connection=connection)
         return {"release_id": release_id, **material}
 
+    def _claim_workspaces(self, task_id: str) -> None:
+        """Hold the repo leases for the duration of a run, including a re-run.
+
+        `complete`/`complete_guided` read the workspace manifest directly and
+        never call `workspaces.create`, so the only `leases.acquire` for a
+        repository happened once, when the workspace was first built. A task
+        that ended terminally had those leases released by `final_report`;
+        resuming it and running again therefore drove git worktree and applier
+        writes against the source repository holding NOTHING, while another
+        task was free to take the same repo and do the same concurrently.
+
+        Claiming here rather than in `state.resume` is deliberate: resume is
+        not the only way back into a run, and the invariant that matters is
+        "a run holds its repos", not "resume restores them". Renew-or-acquire,
+        because a task resumed from a PAUSE never lost its leases and re-taking
+        your own must not fail. If a different task now holds the repo this
+        raises ConflictError, which both loops already end cleanly.
+        """
+        if not self.leases:
+            return
+        for repo_id in sorted(self.applier._workspaces(task_id)):
+            self.leases.acquire_or_renew(f"repo:{repo_id}", task_id, ttl_seconds=3600)
+
+    def _fail_on_resource_conflict(self, task_id: str, exc: ConflictError) -> None:
+        """End a task whose worker lost a race for a shared host resource.
+
+        Which resources actually contend across tasks: `ollama:inference`
+        (workers.py) and `subscription:{name}` (subscription_worker.py) are
+        host-global and held for the duration of one call. `api-spend:{task_id}`
+        is NOT one of them -- its key and its owner are both the task itself, so
+        no second task can ever contend for it. An earlier version of this
+        handler claimed otherwise and picked its terminal state accordingly;
+        that was wrong in a way that mattered, see below.
+
+        FAILED_INFRA, not BLOCKED_POLICY. Losing a race for a transient host
+        lock is an infrastructure condition, not a policy judgement, and the
+        distinction is not cosmetic: BLOCKED_POLICY has no outgoing transitions
+        AND no RESUME_TARGETS entry (state.py), so a task parked there can be
+        neither resumed nor cancelled -- permanently dead. FAILED_INFRA is
+        equally terminal for lease-release purposes (both are in
+        TERMINAL_STATES, so final_report frees the workspace lease) but IS
+        resumable, which matches the transient nature of the cause. It is also
+        what complete() already uses for TimeoutError/OSError a few lines above.
+
+        The guard is on edge legality, not on terminality. "Not terminal" does
+        not imply "FAILED_INFRA is reachable": WORKSPACES_READY, PAUSED_INPUT,
+        CLOUD_REVIEWED, RELEASE_EVIDENCE_READY and others are all non-terminal
+        with no FAILED_INFRA edge, and transition() raises ConflictError on an
+        illegal move -- so guarding on terminality alone makes this handler
+        re-raise the very exception it exists to absorb, stranding the lease it
+        exists to release. Doing nothing in that case is correct: those states
+        are either paused (resumable, and meant to keep their workspace) or
+        already ended.
+        """
+        task = self.tasks.get(task_id)
+        current = task["state"]
+        ended = "FAILED_INFRA" in TRANSITIONS.get(current, set())
+        # Audited unconditionally, and BEFORE the transition. The do-nothing
+        # branch is the one that most needs a record: it absorbs a
+        # ConflictError and changes no state, so without this the only
+        # surviving evidence would be a task.transition event that never
+        # happens -- an exception swallowed with no trace anywhere.
+        self.audit.append(
+            "worker.resource-conflict",
+            {"state": current, "ended": ended, "detail": str(exc)[:300]},
+            system_id=task["system_id"], task_id=task_id,
+        )
+        if not ended:
+            return
+        self.tasks.transition(task_id, "FAILED_INFRA", reason=f"worker lost a race for a shared resource: {exc}. Retry with `resume` once the competing task finishes")
+
     def final_report(self, task_id: str) -> dict[str, Any]:
         task = self.tasks.get(task_id)
         if self.leases and task["state"] in TERMINAL_STATES:
@@ -650,7 +754,13 @@ class Orchestrator:
             "repositories": sorted(repositories), "context_files": context,
             "failure_summary": None if failure is None else {"scope": failure["scope"], "evidence_digest": failure["evidence_digest"], "missing_gates": failure["missing_gates"], "findings": [finding for gate in failure["gates"] for finding in gate.get("findings", [])][:30]},
             "output_contract": {"status": "ok|blocked|failed", "changed_paths": ["REPO_ID:path"], "operations": [{"repo_id": "registered ID", "path": "relative text file", "action": "write|delete", "content": "required for write", "expected_hash": "current SHA-256 or null for create", "executable": False}]},
-            "rules": ["Return one JSON object only", "Do not include secrets", "Do not change tests merely to force a pass", "Do not run commands", "Use exact current hashes", "List every operation in changed_paths"],
+            # The secret rule states the convention the output is GRADED
+            # against. It used to say only "Do not include secrets" while the
+            # scanners silently required one of a specific set of forms, so a
+            # model that invented its own placeholder failed the whole run with
+            # no way to know the rule. Enforcement without instruction is a
+            # rejection loop; keep this list in step with SECRET_PATTERNS.
+            "rules": ["Return one JSON object only", "Never write a literal credential. Reference secrets only as os.environ[\"NAME\"], getenv(\"NAME\"), settings.NAME, config.NAME, vault.get(...), or secret_ref, or use the exact literal \"placeholder\"; any other credential-like literal is rejected and the run fails", "Do not change tests merely to force a pass", "Do not run commands", "Use exact current hashes", "List every operation in changed_paths"],
         }
         encoded = canonical_json(request)
         while len(encoded) > 30_000 and request["context_files"]:
