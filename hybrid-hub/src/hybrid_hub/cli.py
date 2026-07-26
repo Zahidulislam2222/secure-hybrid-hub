@@ -12,7 +12,7 @@ from .policy import RANK, compose
 from .topology import Topology
 from .model_select import selected_transport
 from .http_api_worker import DEFAULT_ANTHROPIC_VERSION, HTTP_API_ADAPTERS, HttpApiConfig, HttpApiWorker
-from .subscription_worker import SUBSCRIPTION_ADAPTERS, SubscriptionCliConfig, SubscriptionCliWorker
+from .subscription_worker import SUBSCRIPTION_ADAPTERS, SUBSCRIPTION_EFFORTS, SubscriptionCliConfig, SubscriptionCliWorker
 from .workers import LocalAdapterConfig, LocalWorker
 
 
@@ -89,6 +89,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--max-task-cost-usd", type=float, help="hard per-task API spend cap in USD (required for HTTP API adapters)")
     run.add_argument("--framing-token-overhead", type=int, help="input tokens the vendor bills for request framing, added to the worst-case spend bound")
     run.add_argument("--model")
+    run.add_argument(
+        "--effort",
+        choices=sorted(set().union(*SUBSCRIPTION_EFFORTS.values())),
+        help="explicit reasoning effort for subscription coding CLIs",
+    )
     run.add_argument("--timeout", type=int, help="worker timeout in seconds (defaults to the stored selection's value, else 300)")
     run.add_argument("--executable", help="absolute local ollama/ollama.exe path")
     run.add_argument("--http-bridge-executable", help="absolute local curl/curl.exe path for bounded loopback Ollama HTTP")
@@ -189,8 +194,8 @@ def _parser() -> argparse.ArgumentParser:
     research_resolve.add_argument("query")
     research_resolve.add_argument("--official-url", action="append", default=[])
 
-    secret = sub.add_parser("secret")
-    secret_sub = secret.add_subparsers(dest="secret_command", required=True)
+    secret_parser = sub.add_parser("secret")
+    secret_sub = secret_parser.add_subparsers(dest="secret_command", required=True)
     secret_propose = secret_sub.add_parser("propose")
     secret_propose.add_argument("system_id")
     secret_propose.add_argument("--capability", type=Path, required=True)
@@ -382,6 +387,7 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
         input_cost, output_cost, max_task_cost = args.input_cost_per_mtok, args.output_cost_per_mtok, args.max_task_cost_usd
         framing_overhead = args.framing_token_overhead
         timeout = args.timeout
+        effort = args.effort
         if args.through == "verified":
             if not model:
                 selection = selected_transport(hub.database, hub.audit, args.system)
@@ -399,7 +405,17 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
                     max_task_cost = max_task_cost if max_task_cost is not None else selection.get("max_task_cost_usd")
                     framing_overhead = framing_overhead if framing_overhead is not None else selection.get("framing_token_overhead")
                     timeout = timeout if timeout is not None else selection.get("timeout")
-                    hub.audit.append("model.selection-used", {"model_id": selection["model_id"], "adapter": adapter, "provider_model": model}, system_id=args.system)
+                    effort = effort or selection.get("reasoning_effort")
+                    hub.audit.append(
+                        "model.selection-used",
+                        {
+                            "model_id": selection["model_id"],
+                            "adapter": adapter,
+                            "provider_model": model,
+                            "reasoning_effort": effort,
+                        },
+                        system_id=args.system,
+                    )
             if not model:
                 raise AuthorizationRequired("verified orchestration requires an explicitly selected model: pass --model or configure one with `model select`")
             adapter = adapter or "codex-local"
@@ -409,7 +425,13 @@ def _handle(hub: Hub, args: argparse.Namespace) -> Any:
             if adapter in SUBSCRIPTION_ADAPTERS:
                 if not args.guided_plan:
                     raise PolicyDenied("subscription adapters support guided plans only")
-                subscription_config = SubscriptionCliConfig(adapter, cli_executable, model, timeout)
+                subscription_config = SubscriptionCliConfig(
+                    adapter,
+                    cli_executable,
+                    model,
+                    timeout=timeout,
+                    effort=effort or "high",
+                )
                 worker = SubscriptionCliWorker(hub.database, hub.audit, hub.leases, subscription_config)
             elif adapter in HTTP_API_ADAPTERS:
                 if not args.guided_plan:

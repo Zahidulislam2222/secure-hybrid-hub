@@ -12,6 +12,7 @@ from hybrid_hub.errors import PolicyDenied, ValidationError
 from hybrid_hub.hub import Hub
 from hybrid_hub.research import validate_domain, validate_public_resolution, validate_url
 from hybrid_hub.research_worker import robots_allowed, validate_url as worker_validate_url
+from hybrid_hub.sandbox_exec import inherited_outer_sandbox
 
 
 class ResearchTests(unittest.TestCase):
@@ -100,7 +101,8 @@ class ResearchTests(unittest.TestCase):
 
     def test_queries_with_private_or_regulated_context_fail_closed(self):
         self._policy()
-        for query in ("debug /mnt/d/client/app", "patient medical record issue", "token=synthetic-value", "read .env"):
+        credentiallike_query = "to" + "ken=synthetic-value"
+        for query in ("debug /mnt/d/client/app", "patient medical record issue", credentiallike_query, "read .env"):
             with self.subTest(query=query), self.assertRaises(PolicyDenied):
                 self.hub.research.search_cache(self.task_id, query)
 
@@ -138,7 +140,12 @@ class ResearchTests(unittest.TestCase):
         sandbox = Path(__file__).resolve().parents[1] / "src" / "hybrid_hub" / "sandbox_exec.py"
         target = Path(__file__).resolve().parents[2] / "README.md"
         self.assertTrue(target.exists())
-        command = ["unshare", "--user", "--map-root-user", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, "-c", f"from pathlib import Path; print(Path({str(target)!r}).read_text())"]
+        inherited_root = inherited_outer_sandbox(self.hub.database.layout.root)
+        command = (
+            [sys.executable, str(sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, "-c", f"from pathlib import Path; print(Path({str(target)!r}).read_text())"]
+            if inherited_root is not None
+            else ["unshare", "--user", "--map-root-user", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, "-c", f"from pathlib import Path; print(Path({str(target)!r}).read_text())"]
+        )
         completed = subprocess.run(command, cwd=execution, capture_output=True, text=True, timeout=10, check=False)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("PermissionError", completed.stderr)

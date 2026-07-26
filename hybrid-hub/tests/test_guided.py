@@ -6,8 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hybrid_hub.errors import ConflictError, PolicyDenied
+from hybrid_hub.errors import AdapterError, ConflictError, PolicyDenied
 from hybrid_hub.hub import Hub
+from hybrid_hub.util import sha256_bytes
 
 
 def git_repo(path: Path) -> None:
@@ -114,11 +115,188 @@ class GuidedOrchestrationTests(unittest.TestCase):
         self.assertEqual(report["research_evidence_count"], 1)
         self.assertEqual([item["packet"] for item in observations], ["core", "core", "tests"])
         self.assertEqual([item["target"] for item in observations], ["app.py", "tests/test_app.py", "tests/test_app.py"])
+        core_candidate = "def add(left, right):\n    return left + right\n"
+        candidate_header = (
+            f"SAME-ATTEMPT CANDIDATE FILE {self.repo_id}:app.py "
+            f"SHA256={sha256_bytes(core_candidate.encode('utf-8'))}"
+        )
+        self.assertIn(candidate_header, observations[1]["prompt"])
+        self.assertIn(core_candidate, observations[1]["prompt"])
         self.assertIn(self.evidence["source_url"], observations[-1]["prompt"])
         self.assertIn(self.evidence["content_hash"], observations[-1]["prompt"])
         self.assertTrue((workspace / "app.py").is_file())
         self.assertTrue((workspace / "tests" / "test_app.py").is_file())
         self.assertTrue(report["audit_valid"])
+
+    def test_required_context_over_old_ceiling_is_included_with_exact_hash(self):
+        large_context = "# Synthetic context\n" + ("bounded-context-line\n" * 500)
+        (self.project / "README.md").write_text(large_context, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.project), "add", "README.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.project),
+                "-c",
+                "user.name=Guided Tests",
+                "-c",
+                "user.email=guided@example.invalid",
+                "commit",
+                "-qm",
+                "large synthetic context",
+            ],
+            check=True,
+        )
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        prompts = []
+        contents = {
+            "app.py": "def add(left, right):\n    return left + right\n",
+            "tests/test_app.py": "import unittest\nfrom app import add\nclass T(unittest.TestCase):\n    def test_values(self):\n        self.assertEqual(add(2, 3), 5)\n",
+        }
+
+        def driver(_task_id, prompt, *_):
+            prompts.append(prompt)
+            target = prompt.split("GENERATE THIS ONE FILE NOW: ", 1)[1].splitlines()[0].split(":", 1)[1]
+            return {"status": "ok", "changed_paths": [], "content": contents[target]}
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, driver, adapter="codex-local")
+        self.assertTrue(report["verified"], report)
+        self.assertGreater(len(large_context.encode("utf-8")), 8_000)
+        expected = f"WORKSPACE BASE FILE {self.repo_id}:README.md SHA256={sha256_bytes(large_context.encode('utf-8'))}"
+        self.assertIn(expected, prompts[0])
+        self.assertIn(large_context, prompts[0])
+
+    def test_required_context_that_cannot_fit_blocks_before_driver(self):
+        oversized = "x" * 24_001
+        (self.project / "BIG.md").write_text(oversized, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.project), "add", "BIG.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.project),
+                "-c",
+                "user.name=Guided Tests",
+                "-c",
+                "user.email=guided@example.invalid",
+                "commit",
+                "-qm",
+                "oversized synthetic context",
+            ],
+            check=True,
+        )
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        plan["packets"][0]["context_paths"][self.repo_id] = ["BIG.md"]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        called = []
+        report = self.hub.orchestrator.complete_guided(
+            self.task_id,
+            lambda *_: called.append(True),
+            adapter="codex-local",
+        )
+        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
+        self.assertIn("cannot fit the packet budget", report["task"]["reason"])
+        self.assertEqual(called, [])
+
+    def test_later_deliverable_failure_applies_no_candidate_files(self):
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace_result = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        workspace = Path(workspace_result["repositories"][0]["workspace"])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace_result["manifest_hash"]])
+        calls = []
+
+        def driver(_task_id, _prompt, *_):
+            calls.append(1)
+            if len(calls) == 1:
+                return {"status": "ok", "changed_paths": [], "content": "def add(left, right):\n    return left + right\n"}
+            raise AdapterError("synthetic later deliverable failure")
+
+        report = self.hub.orchestrator.complete_guided(
+            self.task_id,
+            driver,
+            adapter="codex-local",
+            max_repairs=0,
+        )
+        self.assertEqual(report["task"]["state"], "BLOCKED_QUALITY")
+        self.assertFalse((workspace / "app.py").exists())
+        self.assertFalse((workspace / "tests" / "test_app.py").exists())
+        self.assertEqual(report["implementation_attempts"], [])
+
+    def test_out_of_scope_baseline_preflight_has_no_model_verdict_or_repair(self):
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        calls = []
+        contents = {
+            "app.py": "def add(left, right):\n    return left + right\n",
+            "tests/test_app.py": "import unittest\nfrom app import add\nclass T(unittest.TestCase):\n    def test_values(self):\n        self.assertEqual(add(2, 3), 5)\n",
+        }
+
+        def driver(_task_id, prompt, *_):
+            calls.append(1)
+            target = prompt.split("GENERATE THIS ONE FILE NOW: ", 1)[1].splitlines()[0].split(":", 1)[1]
+            return {"status": "ok", "changed_paths": [], "content": contents[target]}
+
+        quality = {
+            "passed": False,
+            "evidence_digest": "a" * 64,
+            "missing_gates": ["secret-scan", "unit"],
+            "gates": [
+                {
+                    "command_id": "builtin-secret-scan",
+                    "gate": "secret-scan",
+                    "repository_id": self.repo_id,
+                    "passed": False,
+                    "exit_code": 1,
+                    "evidence_digest": None,
+                    "findings": [
+                        "environment-value file is forbidden in a coding workspace: tests/fixtures/security/.env.synthetic"
+                    ],
+                },
+                {
+                    "command_id": "synthetic-unit",
+                    "gate": "unit",
+                    "repository_id": self.repo_id,
+                    "passed": False,
+                    "exit_code": None,
+                    "evidence_digest": None,
+                    "findings": ["command not executed because a pre-execution safety gate failed"],
+                },
+            ],
+        }
+        original_run = self.hub.quality.run
+        self.hub.quality.run = lambda *_: quality
+        try:
+            report = self.hub.orchestrator.complete_guided(
+                self.task_id,
+                driver,
+                adapter="codex-local",
+                max_repairs=3,
+            )
+        finally:
+            self.hub.quality.run = original_run
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.assertIn("no model verdict", report["task"]["reason"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report["guided_packets"][0]["attempts"], 1)
+        with self.hub.database.connect() as connection:
+            event = connection.execute(
+                "SELECT payload_json FROM audit_events WHERE event_type='guided-packet.no-model-verdict' AND task_id=?",
+                (self.task_id,),
+            ).fetchone()
+        self.assertIsNotNone(event)
+        self.assertFalse(json.loads(event[0])["repair_consumed"])
 
     def test_deliverable_outside_supervisor_allowed_paths_is_blocked(self):
         plan = self.plan()

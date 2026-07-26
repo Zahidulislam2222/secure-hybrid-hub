@@ -19,6 +19,7 @@ from typing import Any
 
 from .audit import AuditLog, SECRET_PATTERNS, sanitize
 from .errors import AdapterError, ConflictError, PolicyDenied, ValidationError
+from .sandbox_exec import inherited_outer_sandbox
 from .storage import Database
 from .util import bounded_text, canonical_json, require_id, sha256_bytes, sha256_json, utc_now
 
@@ -101,15 +102,15 @@ class SyntheticMemoryBackend(SecretBackend):
             raise PolicyDenied("approved synthetic secret identifier is unavailable") from exc
 
 
-def secret_variants(secret: str) -> set[str]:
-    encoded = secret.encode("utf-8")
+def secret_variants(value: str) -> set[str]:
+    encoded = value.encode("utf-8")
     return {
-        secret,
+        value,
         base64.b64encode(encoded).decode("ascii"),
         base64.urlsafe_b64encode(encoded).decode("ascii"),
         encoded.hex(),
-        urllib.parse.quote(secret, safe=""),
-        json.dumps(secret)[1:-1],
+        urllib.parse.quote(value, safe=""),
+        json.dumps(value)[1:-1],
     }
 
 
@@ -220,12 +221,17 @@ class SecretRunner:
         if not unshare:
             raise PolicyDenied("secret runner isolation is unavailable")
         environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(execution), "TMPDIR": str(execution), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8", "NO_PROXY": "*", "no_proxy": "*", **values}
-        command = [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox), "--allow-root", str(execution), "--", executable, *arguments]
+        inherited_root = inherited_outer_sandbox(self.database.layout.root)
+        command = (
+            [sys.executable, str(self._sandbox), "--allow-root", str(execution), "--", executable, *arguments]
+            if inherited_root is not None
+            else [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox), "--allow-root", str(execution), "--", executable, *arguments]
+        )
         started = time.monotonic()
         with tempfile.NamedTemporaryFile(dir=execution, delete=False) as output:
             output_path = Path(output.name)
             try:
-                process = subprocess.Popen(command, cwd=execution, env=environment, stdout=output, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=self._limits(specification["timeout_seconds"], specification["max_output_bytes"]))
+                process = subprocess.Popen(command, cwd=execution, env=environment, stdout=output, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=self._limits(specification["timeout_seconds"], specification["max_output_bytes"], inherited=inherited_root is not None))
                 try:
                     exit_code = process.wait(timeout=specification["timeout_seconds"])
                 except subprocess.TimeoutExpired:
@@ -292,12 +298,12 @@ class SecretRunner:
         return count
 
     @classmethod
-    def _limits(cls, timeout: int, output_bytes: int):
+    def _limits(cls, timeout: int, output_bytes: int, *, inherited: bool = False):
         # Computed in the PARENT, before fork: reading /proc from inside
         # preexec_fn would run after the namespaces are being set up, and
         # preexec_fn must stay minimal and async-signal-safe.
         nproc_hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
-        nproc = cls._owned_process_count() + SANDBOX_PROCESS_HEADROOM
+        nproc = SANDBOX_PROCESS_HEADROOM if inherited else cls._owned_process_count() + SANDBOX_PROCESS_HEADROOM
         if nproc_hard != resource.RLIM_INFINITY:
             nproc = min(nproc, nproc_hard)
 

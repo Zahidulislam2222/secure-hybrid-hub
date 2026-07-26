@@ -18,6 +18,10 @@ from .util import bounded_text, sha256_bytes, sha256_json, utc_now
 from .workers import LocalWorker
 
 SUBSCRIPTION_ADAPTERS = frozenset({"claude-subscription-cli", "codex-subscription-cli"})
+SUBSCRIPTION_EFFORTS = {
+    "claude-subscription-cli": frozenset({"low", "medium", "high", "max"}),
+    "codex-subscription-cli": frozenset({"low", "medium", "high", "xhigh"}),
+}
 _EXECUTABLE_NAMES = {
     "claude-subscription-cli": {"claude", "claude.cmd", "claude.exe"},
     "codex-subscription-cli": {"codex", "codex.cmd", "codex.exe"},
@@ -41,6 +45,7 @@ class SubscriptionCliConfig:
     executable: str
     model: str
     timeout: int = 300
+    effort: str = "high"
     max_prompt_bytes: int = 32768
     max_output_bytes: int = 65536
 
@@ -51,6 +56,8 @@ class SubscriptionCliConfig:
             raise ValidationError("invalid subscription model name")
         if not isinstance(self.timeout, int) or not 1 <= self.timeout <= 600:
             raise ValidationError("invalid subscription adapter timeout")
+        if self.effort not in SUBSCRIPTION_EFFORTS[self.name]:
+            raise ValidationError("unsupported subscription effort for adapter")
         path = Path(self.executable) if self.executable else None
         if path is None or not path.is_absolute() or not path.is_file() or path.name.lower() not in _EXECUTABLE_NAMES[self.name]:
             raise ValidationError("subscription CLI executable must be an existing absolute claude/codex path")
@@ -71,6 +78,51 @@ class SubscriptionCliWorker:
         self.audit = audit
         self.leases = leases
         self.config = config
+        self._cli_version = "not-preflighted"
+
+    def _argument_policy(self) -> dict[str, Any]:
+        if self.config.name == "claude-subscription-cli":
+            isolation = "empty-scratch+no-session-persistence+safe-mode+tools-disabled"
+            fixed_arguments = [
+                "-p",
+                "--output-format=text",
+                "--no-session-persistence",
+                "--safe-mode",
+                "--disallowedTools=Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+                "--tools=",
+                f"--effort={self.config.effort}",
+            ]
+        else:
+            isolation = "empty-scratch+read-only+ephemeral+ignore-user-config+ignore-rules"
+            fixed_arguments = [
+                "exec",
+                "--sandbox=read-only",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--ignore-rules",
+                f"model_reasoning_effort={self.config.effort}",
+                f"model={self.config.model}",
+            ]
+        return {
+            "adapter": self.config.name,
+            "model": self.config.model,
+            "effort": self.config.effort,
+            "isolation_mode": isolation,
+            "fixed_arguments": fixed_arguments,
+            "fallback": "disabled",
+        }
+
+    def _execution_evidence(self) -> dict[str, Any]:
+        policy = self._argument_policy()
+        return {
+            "model": self.config.model,
+            "effort": self.config.effort,
+            "cli_version": self._cli_version,
+            "isolation_mode": policy["isolation_mode"],
+            "argument_policy_hash": sha256_json(policy),
+            "fallback": "disabled",
+        }
 
     def preflight(self) -> dict[str, Any]:
         if self.database.emergency_stopped():
@@ -79,7 +131,14 @@ class SubscriptionCliWorker:
         if completed.returncode:
             raise AdapterError(f"subscription CLI preflight exited {completed.returncode}: {completed.stderr.strip()[:200]}")
         version = completed.stdout.strip().splitlines()[0][:100] if completed.stdout.strip() else "unknown"
-        report = {"adapter": self.config.name, "model": self.config.model, "transport": "subscription-cli", "version": version, "available": True}
+        self._cli_version = version
+        report = {
+            "adapter": self.config.name,
+            "transport": "subscription-cli",
+            "version": version,
+            "available": True,
+            **self._execution_evidence(),
+        }
         self.audit.append("worker.preflight", report)
         return report
 
@@ -108,7 +167,13 @@ class SubscriptionCliWorker:
         prompt_bytes = prompt.encode("utf-8")
         self.audit.append(
             "worker.cloud-context-sent",
-            {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "prompt_sha256": sha256_bytes(prompt_bytes), "prompt_bytes": len(prompt_bytes)},
+            {
+                "adapter": self.config.name,
+                "task_id": task_id,
+                "prompt_sha256": sha256_bytes(prompt_bytes),
+                "prompt_bytes": len(prompt_bytes),
+                **self._execution_evidence(),
+            },
             system_id=task["system_id"], task_id=task_id,
         )
         with self.leases.held(f"subscription:{self.config.name}", task_id, ttl_seconds=self.config.timeout + 30):
@@ -121,8 +186,33 @@ class SubscriptionCliWorker:
             if pattern.search(text):
                 raise PolicyDenied("subscription file generation contains credential-like material")
         result_payload = {"status": "ok", "changed_paths": [], "content": text}
-        result = {"adapter": self.config.name, "model": self.config.model, "task_id": task_id, "result": result_payload, "output_hash": sha256_json(result_payload), "completed_at": utc_now()}
-        self.audit.append("worker.file-completed", {key: result[key] for key in ("adapter", "model", "task_id", "output_hash")}, system_id=task["system_id"], task_id=task_id)
+        result = {
+            "adapter": self.config.name,
+            "task_id": task_id,
+            "result": result_payload,
+            "output_hash": sha256_json(result_payload),
+            "completed_at": utc_now(),
+            **self._execution_evidence(),
+        }
+        self.audit.append(
+            "worker.file-completed",
+            {
+                key: result[key]
+                for key in (
+                    "adapter",
+                    "model",
+                    "effort",
+                    "cli_version",
+                    "isolation_mode",
+                    "argument_policy_hash",
+                    "fallback",
+                    "task_id",
+                    "output_hash",
+                )
+            },
+            system_id=task["system_id"],
+            task_id=task_id,
+        )
         return result
 
     def run_structured(self, task_id: str, prompt: str) -> dict[str, Any]:
@@ -130,7 +220,25 @@ class SubscriptionCliWorker:
 
     def _generate(self, prompt: str, scratch: Path) -> str:
         if self.config.name == "claude-subscription-cli":
-            arguments = [str(self.config.executable), "-p", "--output-format", "text", "--no-session-persistence", "--disallowedTools", "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
+            arguments = [
+                str(self.config.executable),
+                "-p",
+                "--output-format",
+                "text",
+                "--no-session-persistence",
+                "--disallowedTools",
+                "Bash",
+                "Edit",
+                "Write",
+                "NotebookEdit",
+                "WebFetch",
+                "WebSearch",
+                "--safe-mode",
+                "--tools",
+                "",
+                "--effort",
+                self.config.effort,
+            ]
             if self.config.model != DEFAULT_MODEL:
                 arguments += ["--model", self.config.model]
             completed = self._run(arguments, input_text=prompt, timeout=self.config.timeout, cwd=scratch)
@@ -139,9 +247,26 @@ class SubscriptionCliWorker:
             output = completed.stdout
         else:
             last_message = scratch / "last-message.txt"
-            arguments = [str(self.config.executable), "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--cd", str(scratch), "--color", "never", "--output-last-message", str(last_message)]
+            arguments = [
+                str(self.config.executable),
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--cd",
+                str(scratch),
+                "--color",
+                "never",
+                "--output-last-message",
+                str(last_message),
+                "-c",
+                f'model_reasoning_effort="{self.config.effort}"',
+            ]
             if self.config.model != DEFAULT_MODEL:
-                arguments += ["--model", self.config.model]
+                arguments += ["-c", f'model="{self.config.model}"']
             arguments.append("-")
             completed = self._run(arguments, input_text=prompt, timeout=self.config.timeout, cwd=scratch)
             if completed.returncode:

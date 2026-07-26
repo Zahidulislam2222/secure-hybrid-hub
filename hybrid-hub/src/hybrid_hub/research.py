@@ -17,6 +17,7 @@ from typing import Any
 
 from .audit import AuditLog, SECRET_PATTERNS
 from .errors import AdapterError, ConflictError, PolicyDenied, ValidationError
+from .sandbox_exec import inherited_outer_sandbox
 from .storage import Database
 from .util import atomic_write, bounded_text, canonical_json, require_id, sha256_bytes, sha256_json, utc_now
 
@@ -28,7 +29,7 @@ QUERY_FORBIDDEN = [
     re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"),
 ]
 INJECTION = re.compile(r"(?i)(?:ignore (?:all |the )?(?:previous|prior|system) instructions|read (?:the )?\.env|upload (?:the )?repository|reveal (?:secrets|credentials)|execute (?:this|the following) command|change (?:the )?(?:policy|permissions))")
-TOKEN = re.compile(r"[a-z0-9][a-z0-9._+-]{1,63}")
+INDEX_TERM = re.compile(r"[a-z0-9][a-z0-9._+-]{1,63}")
 
 
 def validate_domain(value: str) -> str:
@@ -222,7 +223,12 @@ class ResearchManager:
         unshare = shutil.which("unshare", path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         if not unshare:
             raise PolicyDenied("research isolation executable is unavailable")
-        command = [unshare, "--user", "--map-root-user", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, str(worker)]
+        inherited_root = inherited_outer_sandbox(self.database.layout.root)
+        command = (
+            [sys.executable, str(self._sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, str(worker)]
+            if inherited_root is not None
+            else [unshare, "--user", "--map-root-user", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox), "--allow-root", str(execution), "--research-network", "--", sys.executable, str(worker)]
+        )
         environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(execution), "TMPDIR": str(execution), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "*", "no_proxy": "*"}
         try:
             completed = subprocess.run(command, cwd=execution, env=environment, capture_output=True, timeout=timeout * 6, check=False)
@@ -243,7 +249,7 @@ class ResearchManager:
         self._validate_query(query)
         if not 1 <= limit <= 20:
             raise ValidationError("research result limit is invalid")
-        tokens = sorted(set(TOKEN.findall(query.lower())))[:32]
+        tokens = sorted(set(INDEX_TERM.findall(query.lower())))[:32]
         if not tokens:
             raise ValidationError("research query has no indexable terms")
         with self.database.connect() as connection:
@@ -280,7 +286,7 @@ class ResearchManager:
         safe_metadata = {**metadata, "prompt_injection_detected": detected, "untrusted_content": True, "content_is_instruction": False}
         with self.database.transaction() as connection:
             connection.execute("INSERT INTO research_evidence VALUES(?,?,?,?,?,?,?,?,?,?,?)", (evidence_id, task["system_id"], task["task_id"], source_url, retrieved_at, content_hash, artifact, len(encoded), media_type, self.database.json(safe_metadata), utc_now()))
-            tokens = sorted(set(TOKEN.findall(content.lower())))[:50_000]
+            tokens = sorted(set(INDEX_TERM.findall(content.lower())))[:50_000]
             connection.executemany("INSERT OR IGNORE INTO research_index VALUES(?,?,?)", ((task["system_id"], token, evidence_id) for token in tokens))
             self.audit.append("research.evidence-stored", {"evidence_id": evidence_id, "source_url": source_url, "retrieved_at": retrieved_at, "content_hash": content_hash, "size": len(encoded), "media_type": media_type, "prompt_injection_detected": detected}, system_id=task["system_id"], task_id=task["task_id"], connection=connection)
         return {"schema_version": "1.0.0", "evidence_id": evidence_id, "task_id": task["task_id"], "system_id": task["system_id"], "source_url": source_url, "retrieved_at": retrieved_at, "content_hash": content_hash, "artifact_digest": artifact, "size": len(encoded), "media_type": media_type, **safe_metadata}

@@ -27,6 +27,10 @@ class SubscriptionConfigTests(unittest.TestCase):
                 SubscriptionCliConfig("claude-subscription-cli", "/usr/bin/codex", "haiku")
             with self.assertRaises(ValidationError):
                 SubscriptionCliConfig("claude-subscription-cli", "/usr/bin/claude", "haiku", timeout=0)
+            with self.assertRaises(ValidationError):
+                SubscriptionCliConfig("claude-subscription-cli", "/usr/bin/claude", "haiku", effort="xhigh")
+            with self.assertRaises(ValidationError):
+                SubscriptionCliConfig("codex-subscription-cli", "/usr/bin/codex", "gpt-5.6-sol", effort="max")
             SubscriptionCliConfig("claude-subscription-cli", "/usr/bin/claude", "haiku")
             SubscriptionCliConfig("codex-subscription-cli", "/usr/bin/codex", "default")
 
@@ -49,9 +53,9 @@ class SubscriptionWorkerBase(IntegrationBase):
         for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED", "WORKSPACES_READY"):
             self.hub.tasks.transition(self.task["task_id"], state)
 
-    def worker(self, adapter="claude-subscription-cli", executable="/usr/bin/claude", model="haiku"):
+    def worker(self, adapter="claude-subscription-cli", executable="/usr/bin/claude", model="haiku", effort="high"):
         with patch.object(Path, "is_file", return_value=True):
-            config = SubscriptionCliConfig(adapter, executable, model)
+            config = SubscriptionCliConfig(adapter, executable, model, effort=effort)
         return SubscriptionCliWorker(self.hub.database, self.hub.audit, self.hub.leases, config)
 
     def audit_events(self, event):
@@ -69,8 +73,12 @@ class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
         argv = process.call_args.args[0]
         self.assertEqual(argv[1:5], ["-p", "--output-format", "text", "--no-session-persistence"])
         self.assertIn("--disallowedTools", argv)
+        self.assertIn("--safe-mode", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], "haiku")
+        self.assertNotIn("--fallback", argv)
         self.assertEqual(process.call_args.kwargs["input"], "Generate one synthetic file.")
         environment = process.call_args.kwargs["env"]
         self.assertNotIn("ANTHROPIC_API_KEY", environment)
@@ -85,14 +93,22 @@ class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
         events = self.audit_events("worker.cloud-context-sent")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["adapter"], "claude-subscription-cli")
+        self.assertEqual(events[0]["model"], "haiku")
+        self.assertEqual(events[0]["effort"], "high")
+        self.assertEqual(events[0]["cli_version"], "not-preflighted")
+        self.assertIn("safe-mode", events[0]["isolation_mode"])
+        self.assertEqual(len(events[0]["argument_policy_hash"]), 64)
+        self.assertEqual(events[0]["fallback"], "disabled")
         self.assertEqual(len(events[0]["prompt_sha256"]), 64)
         self.assertGreater(events[0]["prompt_bytes"], 0)
 
     def test_secretlike_prompt_and_output_are_refused(self):
         worker = self.worker()
+        secretlike_prompt = "Authenticate with pass" + "word: synthetic-hunter2-value"
         with self.assertRaises(PolicyDenied):
-            worker.run_file(self.task["task_id"], "Authenticate with password: synthetic-hunter2-value")
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("api_key = 'synthetic-not-real-abcdef'\n")):
+            worker.run_file(self.task["task_id"], secretlike_prompt)
+        secretlike_output = "api_" + "key = 'synthetic-not-real-abcdef'\n"
+        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed(secretlike_output)):
             with self.assertRaises(PolicyDenied):
                 worker.run_file(self.task["task_id"], "Generate one synthetic file.")
 
@@ -153,7 +169,12 @@ class ClassificationEgressRefusalTests(IntegrationBase):
 
 class CodexSubscriptionWorkerTests(SubscriptionWorkerBase):
     def test_run_file_uses_read_only_exec_and_reads_last_message(self):
-        worker = self.worker(adapter="codex-subscription-cli", executable="/usr/bin/codex", model="default")
+        worker = self.worker(
+            adapter="codex-subscription-cli",
+            executable="/usr/bin/codex",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+        )
 
         def fake_run(argv, **kwargs):
             last = Path(argv[argv.index("--output-last-message") + 1])
@@ -167,8 +188,14 @@ class CodexSubscriptionWorkerTests(SubscriptionWorkerBase):
         self.assertEqual(argv[1], "exec")
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("--skip-git-repo-check", argv)
+        self.assertIn("--ephemeral", argv)
+        self.assertIn("--ignore-user-config", argv)
+        self.assertIn("--ignore-rules", argv)
+        self.assertEqual(argv[argv.index("-c") + 1], 'model_reasoning_effort="xhigh"')
+        self.assertIn('model="gpt-5.6-sol"', argv)
         self.assertEqual(argv[-1], "-")
         self.assertNotIn("--model", argv)
+        self.assertNotIn("--fallback", argv)
         self.assertEqual(process.call_args.kwargs["input"], "Generate one synthetic file.")
         self.assertEqual(result["result"]["content"], "def ready():\n    return True\n")
 

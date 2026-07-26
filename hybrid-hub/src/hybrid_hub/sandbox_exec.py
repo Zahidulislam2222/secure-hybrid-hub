@@ -6,6 +6,7 @@ import os
 import socket
 import struct
 import sys
+from pathlib import Path
 
 
 SIOCGIFFLAGS = 0x8913
@@ -43,6 +44,47 @@ BASE_RIGHTS = (
     ACCESS_MAKE_SYM
 )
 READ_EXECUTE = ACCESS_EXECUTE | ACCESS_READ_FILE | ACCESS_READ_DIR
+
+
+def outside_root_read_is_denied() -> bool:
+    try:
+        Path("/etc/passwd").read_bytes()
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def inherited_outer_sandbox(runtime_root: Path) -> Path | None:
+    """Return a verified outer evidence root or refuse inheritance.
+
+    A nested self-hosting Hub cannot create a second mapped user namespace on
+    every supported kernel. It may reuse the existing no-network namespace
+    only when mapped root, protected temporary paths, runtime/cwd containment,
+    and an active outside-root Landlock denial are all proven.
+    """
+    if os.geteuid() != 0:
+        return None
+    home_text, temp_text = os.environ.get("HOME"), os.environ.get("TMPDIR")
+    if not home_text or not temp_text:
+        return None
+    try:
+        home = Path(home_text).resolve(strict=True)
+        temp = Path(temp_text).resolve(strict=True)
+        current = Path.cwd().resolve(strict=True)
+        runtime = runtime_root.resolve(strict=True)
+    except OSError:
+        return None
+    outer_root = home.parent
+    if (
+        temp != home
+        or not current.is_relative_to(outer_root)
+        or not runtime.is_relative_to(outer_root)
+        or not outside_root_read_is_denied()
+    ):
+        return None
+    return outer_root
 
 
 class RulesetAttr(ctypes.Structure):
