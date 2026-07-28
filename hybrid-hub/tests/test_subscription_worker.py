@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
+import signal
 import subprocess
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,8 +15,53 @@ from hybrid_hub.errors import AdapterError, PolicyDenied, ValidationError
 from hybrid_hub.subscription_worker import SubscriptionCliConfig, SubscriptionCliWorker
 
 
-def completed(stdout="", returncode=0, stderr=""):
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+class FakeProcess:
+    def __init__(self, argv, options, *, stdout=b"", stderr=b"", returncode=0, waits=None):
+        self.argv = argv
+        self.options = options
+        self.input_text = options["stdin"].read().decode()
+        self.pid = 4321
+        self.final_returncode = returncode
+        self.returncode = None
+        self.waits = list(waits or [])
+        self.killed = False
+        options["stdout"].write(stdout)
+        options["stdout"].flush()
+        options["stderr"].write(stderr)
+        options["stderr"].flush()
+
+    def wait(self, timeout=None):
+        if self.waits:
+            item = self.waits.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            self.returncode = item
+            return item
+        self.returncode = self.final_returncode
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -signal.SIGKILL
+
+
+def process_factory(*, stdout="", stderr="", returncode=0, waits=None):
+    def create(argv, **options):
+        process = FakeProcess(
+            argv,
+            options,
+            stdout=stdout.encode(),
+            stderr=stderr.encode(),
+            returncode=returncode,
+            waits=waits,
+        )
+        create.process = process
+        return process
+
+    return create
 
 
 class SubscriptionConfigTests(unittest.TestCase):
@@ -53,9 +101,9 @@ class SubscriptionWorkerBase(IntegrationBase):
         for state in ("REGISTERED_CONTEXT", "CLASSIFIED", "SCOPED", "WORKSPACES_READY"):
             self.hub.tasks.transition(self.task["task_id"], state)
 
-    def worker(self, adapter="claude-subscription-cli", executable="/usr/bin/claude", model="haiku", effort="high"):
+    def worker(self, adapter="claude-subscription-cli", executable="/usr/bin/claude", model="haiku", effort="high", timeout=300):
         with patch.object(Path, "is_file", return_value=True):
-            config = SubscriptionCliConfig(adapter, executable, model, effort=effort)
+            config = SubscriptionCliConfig(adapter, executable, model, timeout=timeout, effort=effort)
         return SubscriptionCliWorker(self.hub.database, self.hub.audit, self.hub.leases, config)
 
     def audit_events(self, event):
@@ -67,7 +115,7 @@ class SubscriptionWorkerBase(IntegrationBase):
 class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
     def test_run_file_uses_headless_print_mode_without_tools_or_api_keys(self):
         worker = self.worker()
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("```python\ndef ready():\n    return True\n```\n")) as process, \
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout="```python\ndef ready():\n    return True\n```\n")) as process, \
                 patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key", "OPENAI_API_KEY": "test-key", "HOME": "/home/synthetic"}):
             result = worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         argv = process.call_args.args[0]
@@ -88,7 +136,7 @@ class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
 
     def test_outbound_context_is_audited_with_hash_before_generation(self):
         worker = self.worker()
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")):
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout="content\n")):
             worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         events = self.audit_events("worker.cloud-context-sent")
         self.assertEqual(len(events), 1)
@@ -108,13 +156,13 @@ class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
         with self.assertRaises(PolicyDenied):
             worker.run_file(self.task["task_id"], secretlike_prompt)
         secretlike_output = "api_" + "key = 'synthetic-not-real-abcdef'\n"
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed(secretlike_output)):
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout=secretlike_output)):
             with self.assertRaises(PolicyDenied):
                 worker.run_file(self.task["task_id"], "Generate one synthetic file.")
 
     def test_nonzero_exit_and_structured_mode_fail_closed(self):
         worker = self.worker()
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("", returncode=1, stderr="not logged in")):
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(returncode=1, stderr="not logged in")):
             with self.assertRaises(AdapterError):
                 worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         with self.assertRaises(AdapterError):
@@ -122,9 +170,167 @@ class ClaudeSubscriptionWorkerTests(SubscriptionWorkerBase):
 
     def test_default_model_omits_the_model_flag(self):
         worker = self.worker(model="default")
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")) as process:
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout="content\n")) as process:
             worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         self.assertNotIn("--model", process.call_args.args[0])
+
+
+class ProcessLifecycleTests(SubscriptionWorkerBase):
+    def test_runner_uses_private_capture_new_session_and_scrubbed_environment(self):
+        create = process_factory(stdout="result\n")
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create) as launched, \
+                patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key", "OPENAI_API_KEY": "test-key", "HOME": "/home/synthetic"}):
+            result = self.worker()._run(
+                ["/usr/bin/claude"],
+                input_text="synthetic input",
+                timeout=30,
+                cwd=None,
+                task_id=self.task["task_id"],
+                system_id="system-a",
+            )
+        options = launched.call_args.kwargs
+        self.assertTrue(options["start_new_session"])
+        self.assertNotEqual(options["stdout"], subprocess.PIPE)
+        self.assertNotEqual(options["stderr"], subprocess.PIPE)
+        self.assertEqual(create.process.input_text, "synthetic input")
+        self.assertNotIn("ANTHROPIC_API_KEY", options["env"])
+        self.assertNotIn("OPENAI_API_KEY", options["env"])
+        self.assertEqual(options["env"]["HOME"], "/home/synthetic")
+        self.assertEqual(result.stdout, "result\n")
+
+    def test_heartbeat_is_metadata_only(self):
+        worker = self.worker()
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            worker._heartbeat(self.task["task_id"], "system-a", 30)
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(set(payload), {"adapter", "task_id", "elapsed_bucket", "state"})
+        self.assertEqual(payload["elapsed_bucket"], 30)
+        self.assertEqual(self.audit_events("worker.subscription-heartbeat"), [payload])
+
+    def test_polling_schedules_metadata_heartbeat_at_bounded_interval(self):
+        waiting = subprocess.TimeoutExpired(["synthetic"], 1)
+        create = process_factory(stdout="result\n", waits=[waiting, waiting, 0])
+        worker = self.worker()
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create), \
+                patch(
+                    "hybrid_hub.subscription_worker.time.monotonic",
+                    side_effect=[0, 0, 29, 30, 31, 31],
+                ), \
+                patch.object(worker, "_heartbeat") as heartbeat:
+            result = worker._run(
+                ["/usr/bin/claude"],
+                input_text="synthetic input",
+                timeout=60,
+                cwd=None,
+                task_id=self.task["task_id"],
+                system_id="system-a",
+            )
+        heartbeat.assert_called_once_with(self.task["task_id"], "system-a", 30)
+        self.assertEqual(result.stdout, "result\n")
+
+    def test_polling_suppresses_heartbeat_without_task_identity(self):
+        waiting = subprocess.TimeoutExpired(["synthetic"], 1)
+        create = process_factory(waits=[waiting, waiting, 0])
+        worker = self.worker()
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create), \
+                patch(
+                    "hybrid_hub.subscription_worker.time.monotonic",
+                    side_effect=[0, 0, 29, 30, 31, 31],
+                ), \
+                patch.object(worker, "_heartbeat") as heartbeat:
+            worker._run(
+                ["/usr/bin/claude"],
+                input_text=None,
+                timeout=60,
+                cwd=None,
+            )
+        heartbeat.assert_not_called()
+
+    def test_unexpected_heartbeat_failure_still_kills_group_and_reaps(self):
+        waiting = subprocess.TimeoutExpired(["synthetic"], 1)
+        create = process_factory(waits=[waiting, waiting, 0])
+        worker = self.worker()
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create), \
+                patch(
+                    "hybrid_hub.subscription_worker.time.monotonic",
+                    side_effect=[0, 0, 29, 30, 31],
+                ), \
+                patch.object(worker, "_heartbeat", side_effect=RuntimeError("synthetic audit failure")), \
+                patch("hybrid_hub.subscription_worker.os.killpg") as kill_group:
+            with self.assertRaisesRegex(RuntimeError, "synthetic audit failure"):
+                worker._run(
+                    ["/usr/bin/claude"],
+                    input_text=None,
+                    timeout=60,
+                    cwd=None,
+                    task_id=self.task["task_id"],
+                    system_id="system-a",
+                )
+        kill_group.assert_called_once_with(4321, signal.SIGKILL)
+        self.assertEqual(create.process.returncode, 0)
+
+    def test_native_windows_fails_closed_before_process_launch(self):
+        worker = self.worker()
+        with patch("hybrid_hub.subscription_worker.os.name", "nt"), \
+                patch("hybrid_hub.subscription_worker._subprocess_popen") as launched:
+            with self.assertRaisesRegex(AdapterError, "requires POSIX or WSL"):
+                worker._run(
+                    ["/usr/bin/claude"],
+                    input_text=None,
+                    timeout=30,
+                    cwd=None,
+                )
+        launched.assert_not_called()
+
+    def test_timeout_kills_group_and_reaps(self):
+        waiting = subprocess.TimeoutExpired(["synthetic"], 1)
+        create = process_factory(waits=[waiting, waiting, waiting])
+        worker = self.worker(timeout=1)
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create), \
+                patch("hybrid_hub.subscription_worker.time.monotonic", side_effect=[0, 0, 2]), \
+                patch("hybrid_hub.subscription_worker.os.killpg") as kill_group:
+            with self.assertRaises(AdapterError):
+                worker._run(
+                    ["/usr/bin/claude"],
+                    input_text="x",
+                    timeout=1,
+                    cwd=None,
+                    task_id=self.task["task_id"],
+                    system_id="system-a",
+                )
+        kill_group.assert_called_once_with(4321, signal.SIGKILL)
+        self.assertTrue(create.process.killed)
+
+    def test_keyboard_interrupt_cleans_up_before_propagating(self):
+        create = process_factory(waits=[KeyboardInterrupt(), 0])
+        worker = self.worker()
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create), \
+                patch("hybrid_hub.subscription_worker.time.monotonic", side_effect=[0, 0]), \
+                patch("hybrid_hub.subscription_worker.os.killpg") as kill_group:
+            with self.assertRaises(KeyboardInterrupt):
+                worker._run(
+                    ["/usr/bin/claude"],
+                    input_text=None,
+                    timeout=30,
+                    cwd=None,
+                )
+        kill_group.assert_called_once_with(4321, signal.SIGKILL)
+
+    def test_capture_overflow_fails_closed(self):
+        waiting = subprocess.TimeoutExpired(["synthetic"], 1)
+        create = process_factory(stdout="x" * 262145, waits=[waiting, 0])
+        worker = self.worker()
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=create), \
+                patch("hybrid_hub.subscription_worker.time.monotonic", side_effect=[0, 0, 1]), \
+                patch("hybrid_hub.subscription_worker.os.killpg"):
+            with self.assertRaises(AdapterError):
+                worker._run(
+                    ["/usr/bin/claude"],
+                    input_text=None,
+                    timeout=30,
+                    cwd=None,
+                )
 
 
 class ClassificationEgressRefusalTests(IntegrationBase):
@@ -151,7 +357,7 @@ class ClassificationEgressRefusalTests(IntegrationBase):
         for profile in ("healthcare", "legal", "high-secret", "confidential", "gdpr", "financial", "production-critical"):
             with self.subTest(profile=profile):
                 worker, task_id = self.worker_for([profile], f"system-{profile}")
-                with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")) as process:
+                with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout="content\n")) as process:
                     with self.assertRaises(PolicyDenied):
                         worker.run_file(task_id, "Generate one synthetic file.")
                 # The refusal must happen BEFORE the vendor process starts.
@@ -162,7 +368,7 @@ class ClassificationEgressRefusalTests(IntegrationBase):
         # Paired positive: without it, a worker that refused unconditionally
         # would pass every assertion above while breaking the product.
         worker, task_id = self.worker_for(["standard"], "system-permitted")
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("content\n")) as process:
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout="content\n")) as process:
             worker.run_file(task_id, "Generate one synthetic file.")
         process.assert_called()
 
@@ -180,9 +386,13 @@ class CodexSubscriptionWorkerTests(SubscriptionWorkerBase):
             last = Path(argv[argv.index("--output-last-message") + 1])
             last.parent.mkdir(parents=True, exist_ok=True)
             last.write_text("def ready():\n    return True\n", encoding="utf-8")
-            return completed("noise that must be ignored\n")
+            return FakeProcess(
+                argv,
+                kwargs,
+                stdout=b"noise that must be ignored\n",
+            )
 
-        with patch("hybrid_hub.subscription_worker._subprocess_run", side_effect=fake_run) as process:
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=fake_run) as process:
             result = worker.run_file(self.task["task_id"], "Generate one synthetic file.")
         argv = process.call_args.args[0]
         self.assertEqual(argv[1], "exec")
@@ -201,7 +411,7 @@ class CodexSubscriptionWorkerTests(SubscriptionWorkerBase):
 
     def test_missing_last_message_fails_closed(self):
         worker = self.worker(adapter="codex-subscription-cli", executable="/usr/bin/codex", model="default")
-        with patch("hybrid_hub.subscription_worker._subprocess_run", return_value=completed("stdout only\n")):
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=process_factory(stdout="stdout only\n")):
             with self.assertRaises(AdapterError):
                 worker.run_file(self.task["task_id"], "Generate one synthetic file.")
 
@@ -247,9 +457,9 @@ class GuidedSubscriptionFlowTests(IntegrationBase):
 
         def fake_run(argv, **kwargs):
             target = kwargs["input"].split("GENERATE THIS ONE FILE NOW: ", 1)[1].splitlines()[0].split(":", 1)[1]
-            return completed(contents[target])
+            return FakeProcess(argv, kwargs, stdout=contents[target].encode())
 
-        with patch("hybrid_hub.subscription_worker._subprocess_run", side_effect=fake_run):
+        with patch("hybrid_hub.subscription_worker._subprocess_popen", side_effect=fake_run):
             with patch.object(Path, "is_file", return_value=True):
                 config = SubscriptionCliConfig("claude-subscription-cli", "/usr/bin/claude", "haiku")
             worker = SubscriptionCliWorker(self.hub.database, self.hub.audit, self.hub.leases, config)

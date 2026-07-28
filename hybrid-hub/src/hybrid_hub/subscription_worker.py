@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
-from subprocess import run as _subprocess_run
 from pathlib import Path
 from typing import Any
 
@@ -26,17 +28,20 @@ _EXECUTABLE_NAMES = {
     "claude-subscription-cli": {"claude", "claude.cmd", "claude.exe"},
     "codex-subscription-cli": {"codex", "codex.cmd", "codex.exe"},
 }
-# The subscription CLIs authenticate from their own login state under HOME.
-# Provider API keys are deliberately never inherited: a leaked key in the
-# parent environment must not silently switch billing from the subscription
-# to metered API usage.
 _ENVIRONMENT_ALLOWLIST = (
     "HOME", "PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR",
     "WSL_INTEROP", "WSL_DISTRO_NAME", "WSLENV", "WSL_UTF8", "SYSTEMROOT", "WINDIR",
 )
-# "default" means: run on the model the subscription CLI is configured with,
-# passing no model flag at all.
 DEFAULT_MODEL = "default"
+_HEARTBEAT_SECONDS = 30
+_POLL_SECONDS = 1
+_REAP_SECONDS = 5
+
+
+def _subprocess_popen(arguments, *, input: str | None = None, **options):
+    """Patchable process boundary that never sends prompts through a pipe."""
+    del input
+    return subprocess.Popen(arguments, **options)
 
 
 @dataclass(frozen=True)
@@ -64,14 +69,7 @@ class SubscriptionCliConfig:
 
 
 class SubscriptionCliWorker:
-    """Headless subscription-CLI coding worker (claude -p / codex exec).
-
-    The worker is text-only generation: it receives one bounded packet prompt
-    and returns one raw file body. It runs in an empty scratch directory, the
-    CLI's own tools are disabled or read-only sandboxed, and every outbound
-    prompt is audit-logged with its hash BEFORE the call because this
-    transport, unlike local workers, sends the packet context to the vendor.
-    """
+    """Headless, bounded subscription-CLI file generation."""
 
     def __init__(self, database: Database, audit: AuditLog, leases: LeaseManager, config: SubscriptionCliConfig):
         self.database = database
@@ -129,7 +127,7 @@ class SubscriptionCliWorker:
             raise PolicyDenied("emergency stop is active")
         completed = self._run([str(self.config.executable), "--version"], input_text=None, timeout=60, cwd=None)
         if completed.returncode:
-            raise AdapterError(f"subscription CLI preflight exited {completed.returncode}: {completed.stderr.strip()[:200]}")
+            raise AdapterError(f"subscription CLI preflight exited {completed.returncode}")
         version = completed.stdout.strip().splitlines()[0][:100] if completed.stdout.strip() else "unknown"
         self._cli_version = version
         report = {
@@ -150,19 +148,15 @@ class SubscriptionCliWorker:
         if self.database.emergency_stopped():
             raise PolicyDenied("emergency stop is active")
         with self.database.connect() as connection:
-            task = connection.execute("SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved,systems.profiles_json FROM tasks JOIN systems USING(system_id) WHERE task_id=?", (task_id,)).fetchone()
+            task = connection.execute(
+                "SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved,systems.profiles_json "
+                "FROM tasks JOIN systems USING(system_id) WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
         if not task or task["cancelled"] or not task["approved"]:
             raise PolicyDenied("task unavailable or cancelled")
         if task["state"] not in {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING", "LOCAL_FIXING"}:
             raise PolicyDenied("task state does not permit a subscription file worker run")
-        # Classification egress gate. This adapter ships source to a vendor, so
-        # a system whose profile sets cloud_code_egress False must not reach it.
-        # For seven sessions this check existed in policy.py and was called
-        # from nowhere: `policy.require_action` collided by name with the
-        # unrelated `modifiers.require_action`, so grep made the control look
-        # enforced while healthcare/legal/high-secret systems ran freely here.
-        # Enforced at the worker, not at adapter selection, because this is the
-        # boundary that actually transmits.
         require_cloud_egress(json.loads(task["profiles_json"]))
         prompt_bytes = prompt.encode("utf-8")
         self.audit.append(
@@ -174,11 +168,12 @@ class SubscriptionCliWorker:
                 "prompt_bytes": len(prompt_bytes),
                 **self._execution_evidence(),
             },
-            system_id=task["system_id"], task_id=task_id,
+            system_id=task["system_id"],
+            task_id=task_id,
         )
         with self.leases.held(f"subscription:{self.config.name}", task_id, ttl_seconds=self.config.timeout + 30):
             with tempfile.TemporaryDirectory(prefix="hub-subscription-") as scratch:
-                text = self._generate(prompt, Path(scratch))
+                text = self._generate(prompt, Path(scratch), task_id, task["system_id"])
         text = LocalWorker._clean_file_text(text)
         if not text or len(text.encode("utf-8")) > self.config.max_output_bytes:
             raise AdapterError("subscription file generation is empty or exceeds the limit")
@@ -218,7 +213,7 @@ class SubscriptionCliWorker:
     def run_structured(self, task_id: str, prompt: str) -> dict[str, Any]:
         raise AdapterError("subscription CLI adapters support guided file generation only; use a guided plan")
 
-    def _generate(self, prompt: str, scratch: Path) -> str:
+    def _generate(self, prompt: str, scratch: Path, task_id: str, system_id: str) -> str:
         if self.config.name == "claude-subscription-cli":
             arguments = [
                 str(self.config.executable),
@@ -241,9 +236,16 @@ class SubscriptionCliWorker:
             ]
             if self.config.model != DEFAULT_MODEL:
                 arguments += ["--model", self.config.model]
-            completed = self._run(arguments, input_text=prompt, timeout=self.config.timeout, cwd=scratch)
+            completed = self._run(
+                arguments,
+                input_text=prompt,
+                timeout=self.config.timeout,
+                cwd=scratch,
+                task_id=task_id,
+                system_id=system_id,
+            )
             if completed.returncode:
-                raise AdapterError(f"subscription CLI exited {completed.returncode}: {completed.stderr.strip()[:200]}")
+                raise AdapterError(f"subscription CLI exited {completed.returncode}")
             output = completed.stdout
         else:
             last_message = scratch / "last-message.txt"
@@ -268,31 +270,118 @@ class SubscriptionCliWorker:
             if self.config.model != DEFAULT_MODEL:
                 arguments += ["-c", f'model="{self.config.model}"']
             arguments.append("-")
-            completed = self._run(arguments, input_text=prompt, timeout=self.config.timeout, cwd=scratch)
+            completed = self._run(
+                arguments,
+                input_text=prompt,
+                timeout=self.config.timeout,
+                cwd=scratch,
+                task_id=task_id,
+                system_id=system_id,
+            )
             if completed.returncode:
-                raise AdapterError(f"subscription CLI exited {completed.returncode}: {completed.stderr.strip()[:200]}")
+                raise AdapterError(f"subscription CLI exited {completed.returncode}")
             try:
                 output = last_message.read_text(encoding="utf-8")
-            except OSError as exc:
-                raise AdapterError("subscription CLI produced no final message") from exc
+            except OSError:
+                raise AdapterError("subscription CLI produced no final message") from None
         if len(output.encode("utf-8")) > self.config.max_output_bytes * 4:
             raise AdapterError("subscription CLI output exceeds limit")
         return output
 
+    def _heartbeat(self, task_id: str, system_id: str | None, elapsed: int) -> None:
+        payload = {
+            "adapter": self.config.name,
+            "task_id": task_id,
+            "elapsed_bucket": elapsed,
+            "state": "running",
+        }
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
+        self.audit.append("worker.subscription-heartbeat", payload, system_id=system_id, task_id=task_id)
+
     @staticmethod
-    def _run(arguments: list[str], *, input_text: str | None, timeout: int, cwd: Path | None) -> subprocess.CompletedProcess:
+    def _kill_and_reap(process: subprocess.Popen) -> None:
+        try:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_REAP_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=_REAP_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+    def _read_capture(self, stream, maximum: int) -> str:
+        if os.fstat(stream.fileno()).st_size > maximum:
+            raise AdapterError("subscription CLI process output exceeds limit")
+        stream.seek(0)
+        return stream.read(maximum + 1).decode("utf-8", errors="replace")
+
+    def _run(
+        self,
+        arguments: list[str],
+        *,
+        input_text: str | None,
+        timeout: int,
+        cwd: Path | None,
+        task_id: str | None = None,
+        system_id: str | None = None,
+    ) -> subprocess.CompletedProcess:
         environment = {name: os.environ[name] for name in _ENVIRONMENT_ALLOWLIST if name in os.environ}
         environment["NO_COLOR"] = "1"
-        try:
-            return _subprocess_run(
-                arguments,
-                input=input_text,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                cwd=str(cwd) if cwd else None,
-                env=environment,
+        if os.name != "posix":
+            raise AdapterError(
+                "subscription CLI process-group isolation requires POSIX or WSL"
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AdapterError(f"subscription CLI process failed: {type(exc).__name__}") from exc
+        maximum = self.config.max_output_bytes * 4
+        process: subprocess.Popen | None = None
+        try:
+            with tempfile.TemporaryFile(mode="w+b") as incoming, \
+                    tempfile.TemporaryFile(mode="w+b") as outgoing, \
+                    tempfile.TemporaryFile(mode="w+b") as diagnostic:
+                if input_text is not None:
+                    incoming.write(input_text.encode("utf-8"))
+                incoming.seek(0)
+                process = _subprocess_popen(
+                    arguments,
+                    input=input_text,
+                    stdin=incoming,
+                    stdout=outgoing,
+                    stderr=diagnostic,
+                    cwd=str(cwd) if cwd else None,
+                    env=environment,
+                    start_new_session=True,
+                )
+                started = time.monotonic()
+                heartbeat_at = _HEARTBEAT_SECONDS
+                while True:
+                    elapsed = time.monotonic() - started
+                    if elapsed >= timeout:
+                        raise AdapterError("subscription CLI process failed: TimeoutExpired")
+                    try:
+                        returncode = process.wait(timeout=min(_POLL_SECONDS, timeout - elapsed))
+                        break
+                    except subprocess.TimeoutExpired:
+                        if os.fstat(outgoing.fileno()).st_size > maximum or os.fstat(diagnostic.fileno()).st_size > maximum:
+                            raise AdapterError("subscription CLI process output exceeds limit")
+                        elapsed = time.monotonic() - started
+                        if elapsed >= timeout:
+                            raise AdapterError("subscription CLI process failed: TimeoutExpired")
+                        if task_id is not None and elapsed >= heartbeat_at:
+                            bucket = int(elapsed // _HEARTBEAT_SECONDS) * _HEARTBEAT_SECONDS
+                            self._heartbeat(task_id, system_id, bucket)
+                            heartbeat_at = bucket + _HEARTBEAT_SECONDS
+                stdout = self._read_capture(outgoing, maximum)
+                stderr = self._read_capture(diagnostic, maximum)
+                return subprocess.CompletedProcess(arguments, returncode, stdout, stderr)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise AdapterError(f"subscription CLI process failed: {type(exc).__name__}") from None
+        finally:
+            if process is not None:
+                self._kill_and_reap(process)
