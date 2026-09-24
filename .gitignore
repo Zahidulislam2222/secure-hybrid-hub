@@ -49,9 +49,14 @@ PROJECT-DOSSIER.md
 /docs/
 /CLAUDE.md
 /AGENTS.md
+/memory/
 
 # Generated per-project integration wrappers (created by `hub integrations install`)
 hybrid-hub/.hybrid-hub.json
 hybrid-hub/.agents/
 hybrid-hub/.claude/
 hybrid-hub/.vscode/
+
+# Private project registration and document exports
+/.hybrid-hub.json
+/my-project-view/

@@ -25,12 +25,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 pytest -q
 
 # a single module
-PYTHONPATH=src:tests python3 -m unittest tests.test_release_phases
+PYTHONPATH=src:tests python3 -m unittest test_release_phases
 ```
 
 The full suite is synthetic and offline: it must pass with no network access,
-no credentials, and no installed services. A test that reaches the real
-network, reads state outside its temp directory, or depends on a previously
+no credentials, and no external provider services. Some tests require local
+sockets and Linux isolation facilities; report host restrictions explicitly.
+A test that reaches the real external network, reads state outside its temp directory, or depends on a previously
 used runtime will be rejected.
 
 ## Making changes
@@ -48,8 +49,8 @@ used runtime will be rejected.
    timeouts) in business logic; configuration flows in through constructors
    and the registry.
 6. Never commit secrets. `.env*` files, keys, and local runtime state are
-   gitignored; keep it that way. CI runs gitleaks, bandit, and semgrep on
-   every push and PR.
+   gitignored; keep it that way. CI runs gitleaks, bandit and semgrep on
+   configured default-branch pushes and pull requests; inspect actual checks.
 
 ## Commit and PR expectations
 
@@ -58,3 +59,20 @@ used runtime will be rejected.
 - CI (test matrix + security scans) must be green.
 - New files need the project's plain-prose style: explain constraints, not
   restated code.
+
+## Open-source scope and documentation
+
+Contributions are under the existing [Apache-2.0 license](LICENSE). Submit only
+material you have the right to share. Discuss dependency/license changes before
+adding them; provider/model terms are separate from the repository license.
+Keep discussion respectful, actionable and free of private client information.
+
+Use the [roadmap](hybrid-hub/docs/ROADMAP.md) for open workstreams and the
+[release process](hybrid-hub/docs/RELEASE_PROCESS.md) for evidence requirements.
+Update both entry-point READMEs when usage/status changes. Planned designs must
+state assumptions and exit gates. Public documentation belongs under
+`hybrid-hub/docs/`; private operator records must remain excluded.
+
+For frontend work, first agree the [API and accessibility contract](hybrid-hub/docs/FRONTEND_API.md).
+For scale work, publish reproducible workload and capacity evidence. Preserve
+local self-hosting and do not require a commercial service to run synthetic tests.

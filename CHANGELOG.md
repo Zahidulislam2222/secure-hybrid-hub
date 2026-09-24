@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Refresh both READMEs and operational guides for the open-source local broker.
+  Correct blanket phase-completion claims and clarify remaining release gates.
+- Add public frontend/API, backend architecture, security, privacy/legal,
+  reliability, scale, roadmap and release guides. The 1M+ simultaneous-user and
+  availability numbers are future targets with explicit validation requirements.
+- Document self-hosting, community contribution and operator responsibilities;
+  retain the Apache-2.0 license and distinguish optional distributed deployment.
+
 ### Security
 
 - Data-classification egress is now enforced at the boundaries that actually

@@ -1,5 +1,15 @@
 # Operations and regulated-use runbook
 
+This is operator guidance for the open-source broker. Current deployment
+interfaces use synthetic validation; a real production transport and its full
+authority chain remain release gates. See [status](STATUS.md),
+[reliability targets](RELIABILITY.md) and [legal/privacy](LEGAL_PRIVACY.md).
+
+All commands below assume a configured persistent runtime. Pass
+`--runtime "$HUB_RUNTIME"` before the subcommand, or invoke
+`python3 hub.py --runtime "$HUB_RUNTIME"` from the backend directory.
+The `hub` executable exists only after package installation.
+
 ## Before any real project
 
 1. Run the broker under a dedicated OS account on an OS-protected Linux/WSL
@@ -56,7 +66,7 @@ an approved encrypted/OS-protected volume. Restore refuses a non-empty target.
 ## Production progression
 
 Only an approved CI/CD transport receives artifact IDs and parameters. Models
-never receive production credentials or shells. The enforced sequence is:
+never receive production credentials or shells. The intended deployment state sequence is:
 
 ```text
 VERIFIED -> STAGING_DEPLOYED -> STAGING_VERIFIED

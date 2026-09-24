@@ -1,7 +1,8 @@
-# Guided high-model → research → local-model workflow
+# Guided supervisor → research → worker workflow
 
-Guided execution is the production-shaped path for small local models. The
-interactive Codex or Claude session performs architecture, decomposition, and
+This guide describes the current bounded local-worker flow, not production readiness.
+See [status](STATUS.md) for incomplete enforcement and [roadmap](ROADMAP.md) for
+release gates. The interactive Codex or Claude session performs architecture, decomposition, and
 monitoring. The local model receives one bounded work packet at a time. It is
 never asked to invent the whole system architecture.
 
@@ -95,7 +96,7 @@ python3 HUB_ENTRY --runtime PROJECT_RUNTIME run "USER REQUEST" \
   --system SYSTEM_ID --through verified \
   --guided-plan /protected/runtime/inbox/plan.json \
   --supervisor-source codex-interactive \
-  --adapter codex-local --model gemma3:1b
+  --adapter codex-local --model APPROVED_INSTALLED_MODEL
 ```
 
 This does not enable a cloud provider, global connector, model download,
