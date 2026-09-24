@@ -1,6 +1,6 @@
 # Model routing operations
 
-This runbook covers the verified project-scoped model registry, automation policy, deterministic router, and bounded fallback executor. All commands must enter through `hybrid-hub/hub.py`; model adapters never bypass the broker. These steps are synthetic-only until client, provider, credential, data, and production scopes are separately authorized.
+This runbook covers the project-scoped registry, automation policy, router and bounded executor. Synthetic component verification does not establish complete production authority enforcement; see [status](STATUS.md). All commands must enter through `hybrid-hub/hub.py`; model adapters never bypass the broker. These steps are synthetic-only until client, provider, credential, data, and production scopes are separately authorized.
 
 ## Safe lifecycle
 
@@ -46,4 +46,4 @@ python3 hybrid-hub/hub.py --runtime "$RUNTIME" audit verify
 python3 hybrid-hub/hub.py --runtime "$RUNTIME" dossier show SYSTEM_ID
 ```
 
-Treat only `VERIFIED` tasks with valid audit, deterministic quality evidence, and a release manifest as completed. Preserve blocked workspaces and exact task IDs. Record each activated commit, release, manifest, evidence digest, structured dossier version, and next safe action in `PROJECT-DOSSIER.md`. Never weaken scanners, tests, policy, or acceptance criteria to obtain a pass.
+Treat only `VERIFIED` tasks with valid audit, deterministic quality evidence, and a release manifest as completed. Preserve blocked workspaces and exact task IDs. Record activated commits, manifests, evidence digests and recovery instructions in protected operator records; publish only sanitized summaries. Never weaken scanners, tests, policy, or acceptance criteria to obtain a pass.

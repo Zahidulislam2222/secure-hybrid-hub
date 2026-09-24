@@ -68,6 +68,56 @@ def compose(profiles: list[str], layers: list[dict[str, Any]] | None = None, *, 
     return EffectivePolicy(tuple(ordered), classification, retention_days=retention, gates=tuple(gates), policy_hash=sha256_json(payload), **values)
 
 
+def denies_cloud_egress(profiles: list[str]) -> bool:
+    """True when this system's classification forbids sending source to a vendor.
+
+    Reads the PROFILE TABLE directly instead of the composed policy, and that
+    is deliberate. `compose` folds booleans with `all()` over a rule list that
+    always begins with MANAGED_GLOBAL, which hardcodes `cloud_code_egress:
+    False` -- so the composed value is False for all ten profiles, including
+    `standard`, `regulated` and `public-open-source`, which each declare it
+    True. The per-profile values are unreachable through `compose`, which is
+    why the classification gate could never distinguish `healthcare` from
+    `standard` and why wiring `require_action("cloud-egress")` to the workers
+    refused every system rather than the restricted ones.
+
+    Fixing `compose` itself would change `policy_hash` for every registered
+    system and invalidate the hashes already stored on tasks, so the composed
+    policy is left exactly as it is and the classification question is asked
+    of the profile table, which is where the answer actually lives.
+
+    Any single restricting profile denies: profiles are additive restrictions,
+    so a system labelled both `standard` and `healthcare` is healthcare data.
+    `regulated` is prepended by `compose` for every system and permits egress,
+    so it never denies on its own.
+
+    This is a VETO, not a grant. A system that passes here still has to clear
+    the human-approved `provider_profiles.live_enabled` gate before anything
+    is transmitted.
+    """
+    if not profiles:
+        # Fail closed. `compose` prepends "regulated", which permits egress, so
+        # a system registered with no profiles would otherwise be PERMITTED to
+        # ship source to a vendor by the control whose entire job is refusing
+        # on classification. An absent classification is an unanswered
+        # question, not an answer of "unrestricted".
+        return True
+    ordered = ["regulated", *profiles]
+    unknown = [name for name in ordered if name not in PROFILES]
+    if unknown:
+        raise ValidationError(f"unknown profiles: {unknown}")
+    return any(not PROFILES[name]["cloud_code_egress"] for name in ordered)
+
+
+def require_cloud_egress(profiles: list[str]) -> None:
+    """Refuse a transmitting worker when classification forbids egress."""
+    if denies_cloud_egress(profiles):
+        if not profiles:
+            raise PolicyDenied("classification denies cloud egress: system has no classification profile")
+        restricted = sorted(name for name in ["regulated", *profiles] if not PROFILES[name]["cloud_code_egress"])
+        raise PolicyDenied(f"classification denies cloud egress: {', '.join(restricted)}")
+
+
 def require_action(policy: EffectivePolicy, action: str) -> None:
     mapping = {
         "cloud-egress": policy.cloud_code_egress,

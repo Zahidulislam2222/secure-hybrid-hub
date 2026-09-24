@@ -1,5 +1,9 @@
 # Project modifiers
 
+See [setup](../README.md), [status](STATUS.md) and [legal/privacy](LEGAL_PRIVACY.md).
+Profile names are not compliance certifications; production permissions still
+require separately authorized and implemented controls.
+
 A modifier is a versioned, human-approved specialization for one registered
 system. It exists because a medical service, a legal matter system, a public
 library, and a normal internal application should not use identical model,

@@ -1,6 +1,8 @@
 # Explicit project opt-in
 
-The hub is not a global replacement for Codex or Claude Code.
+The open-source hub is installed per project, not as a global replacement for
+existing coding tools. Start with [local setup](../README.md); review
+[current limitations](STATUS.md) before real-client use.
 
 - Only canonical repository roots registered with `hub system init` are visible.
 - Discovery and human dossier approval are required before tasks can start.

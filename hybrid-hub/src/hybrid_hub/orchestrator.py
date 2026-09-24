@@ -10,19 +10,29 @@ from typing import Any, Callable
 
 from .audit import AuditLog, SECRET_PATTERNS
 from .dossier import DossierStore
-from .errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
+from .errors import AdapterError, AuthorizationRequired, ConflictError, PolicyDenied, ValidationError
 from .guided import EvidencePacketBuilder, GuidedPlanStore
 from .quality import QualityRunner
-from .state import TaskManager
+from .state import TERMINAL_STATES, TRANSITIONS, TaskManager
 from .storage import Database
 from .util import atomic_write, canonical_json, sha256_bytes, sha256_json, utc_now
 from .workers import FILE_STOP_MARKER
 
 
 Driver = Callable[[str, str, int, str], dict[str, Any]]
+# Every adapter the hub will accept. Hoisted out of ChangeApplier.apply so the
+# set has one owner and can be asserted against: SUPPORTED_ADAPTERS is a name
+# allowlist and nothing more -- it deliberately does NOT decide whether an
+# adapter may transmit. That is the classification egress policy's job, and
+# conflating the two is what let restricted systems reach a vendor.
+SUPPORTED_ADAPTERS = frozenset({"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli", "anthropic-api", "openai-compatible-api", "synthetic-acceptance"})
 MAX_OPERATIONS = 200
 MAX_OPERATION_BYTES = 1_048_576
 MAX_ATTEMPT_BYTES = 8_388_608
+GUIDED_CONTEXT_BYTES = 24_000
+GUIDED_FILE_BYTES = 32_000
+GUIDED_PROMPT_SOFT_BYTES = 30_000
+GUIDED_PROMPT_HARD_BYTES = 32_768
 FORBIDDEN_PARTS = {".git", ".hg", ".svn", ".hub", "runtime", "secrets"}
 SAFE_TEXT_SUFFIXES = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".toml", ".yaml", ".yml", ".md", ".txt",
@@ -40,7 +50,7 @@ class ImplementationApplier:
         self.dossier = dossier
 
     def apply(self, task_id: str, adapter: str, attempt: int, request_hash: str, result: dict[str, Any], *, allowed_scope: dict[str, list[str]] | None = None, exact_scope: bool = False) -> dict[str, Any]:
-        if adapter not in {"codex-local", "claude-local", "claude-subscription-cli", "codex-subscription-cli", "anthropic-api", "openai-compatible-api", "synthetic-acceptance"}:
+        if adapter not in SUPPORTED_ADAPTERS:
             raise ValidationError("implementation adapter identity is invalid")
         if result.get("status") not in {"ok", "blocked", "failed"}:
             raise AdapterError("implementation status is invalid")
@@ -105,9 +115,22 @@ class ImplementationApplier:
             task = connection.execute("SELECT system_id,classification,policy_hash FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             if not task:
                 raise ValidationError("unknown task")
-            connection.execute("INSERT INTO implementation_attempts VALUES(?,?,?,?,?,?,?,?,?,?)", (attempt_id, task_id, adapter, attempt, "applied", request_hash, result_hash, self.database.json(proposed_paths), diff_hash, utc_now()))
-            checkpoint = self.dossier.checkpoint(task["system_id"], f"implementation-{attempt}", "LOCAL_IMPLEMENTING", {"actor": adapter, "policy_hash": task["policy_hash"], "classification": task["classification"], "evidence": [result_hash, diff_hash], "changed_paths": proposed_paths, "unresolved_risks": []}, task_id=task_id, connection=connection)
-            self.audit.append("implementation.applied", {"attempt_id": attempt_id, "adapter": adapter, "attempt": attempt, "result_hash": result_hash, "diff_hash": diff_hash, "changed_paths": proposed_paths, "checkpoint_hash": checkpoint}, system_id=task["system_id"], task_id=task_id, connection=connection)
+            # Persisted sequence, not the in-run attempt number. Both loops
+            # restart `attempt` at 1 on every invocation, while the table holds
+            # UNIQUE(task_id, adapter, attempt) and the checkpoint phase below
+            # must also be unique. So a task that is resumed and re-run -- the
+            # recovery FAILED_INFRA exists to permit -- collided here on its
+            # FIRST apply, raising sqlite3.IntegrityError, which neither loop
+            # catches: it escaped orchestration entirely, so final_report never
+            # ran and the workspace lease claimed moments earlier stayed held
+            # for its full hour. Counting existing rows makes the number
+            # monotonic across runs, the same way TaskManager.transition
+            # disambiguates repeated states. The in-run attempt is kept in the
+            # audit payload, where it is diagnostic rather than a key.
+            sequence = connection.execute("SELECT COUNT(*) FROM implementation_attempts WHERE task_id=? AND adapter=?", (task_id, adapter)).fetchone()[0] + 1
+            connection.execute("INSERT INTO implementation_attempts VALUES(?,?,?,?,?,?,?,?,?,?)", (attempt_id, task_id, adapter, sequence, "applied", request_hash, result_hash, self.database.json(proposed_paths), diff_hash, utc_now()))
+            checkpoint = self.dossier.checkpoint(task["system_id"], f"implementation-{sequence}", "LOCAL_IMPLEMENTING", {"actor": adapter, "policy_hash": task["policy_hash"], "classification": task["classification"], "evidence": [result_hash, diff_hash], "changed_paths": proposed_paths, "unresolved_risks": []}, task_id=task_id, connection=connection)
+            self.audit.append("implementation.applied", {"attempt_id": attempt_id, "adapter": adapter, "attempt": attempt, "sequence": sequence, "result_hash": result_hash, "diff_hash": diff_hash, "changed_paths": proposed_paths, "checkpoint_hash": checkpoint}, system_id=task["system_id"], task_id=task_id, connection=connection)
         return {"status": "ok", "attempt_id": attempt_id, "changed_paths": proposed_paths, "diff_hash": diff_hash, "result_hash": result_hash}
 
     @staticmethod
@@ -223,6 +246,17 @@ class Orchestrator:
         task = self.tasks.get(task_id)
         if task["state"] != "WORKSPACES_READY":
             raise PolicyDenied("guided completion requires WORKSPACES_READY")
+        try:
+            self._claim_workspaces(task_id)
+        except ConflictError as exc:
+            # Another task holds a repo this run needs. Ending here rather than
+            # letting it escape is the same contract the driver loop enforces:
+            # an unhandled ConflictError strands the task mid-run. WORKSPACES_READY
+            # has a FAILED_INFRA edge, so this is recoverable once the other
+            # task finishes. final_report releases by owner, so the competitor's
+            # lease is untouched.
+            self._fail_on_resource_conflict(task_id, exc)
+            return self.final_report(task_id)
         modifier_row = self.modifiers.for_task(task_id) if self.modifiers else None
         if modifier_row:
             max_repairs = min(max_repairs, modifier_row["modifier"]["max_repairs"])
@@ -256,8 +290,19 @@ class Orchestrator:
                     operations = []
                     prompt_hashes = []
                     repositories = self.applier._workspaces(task_id)
+                    candidate_overrides: dict[tuple[str, str], str] = {}
                     for deliverable in packet["deliverables"]:
-                        prompt = self._guided_prompt(task_id, plan_row["plan"], packet, deliverable, evidence, role, packet_attempt, packet_failure)
+                        prompt = self._guided_prompt(
+                            task_id,
+                            plan_row["plan"],
+                            packet,
+                            deliverable,
+                            evidence,
+                            role,
+                            packet_attempt,
+                            packet_failure,
+                            candidate_overrides,
+                        )
                         prompt_hashes.append(sha256_bytes(prompt.encode("utf-8")))
                         result = driver(task_id, prompt, global_attempt, f"{role}:file")
                         if result.get("status") == "blocked":
@@ -271,6 +316,7 @@ class Orchestrator:
                         target = repositories[deliverable["repo_id"]] / deliverable["path"]
                         expected_hash = sha256_bytes(target.read_bytes()) if target.is_file() else None
                         operations.append({"repo_id": deliverable["repo_id"], "path": deliverable["path"], "action": "write", "content": content, "expected_hash": expected_hash, "executable": False})
+                        candidate_overrides[(deliverable["repo_id"], deliverable["path"])] = content
                     changed_paths = [f"{item['repo_id']}:{item['path']}" for item in operations]
                     result = {"status": "ok", "changed_paths": changed_paths, "operations": operations}
                     request_hash = sha256_json(prompt_hashes)
@@ -285,6 +331,9 @@ class Orchestrator:
                     return self.final_report(task_id)
                 except PolicyDenied as exc:
                     self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
+                    return self.final_report(task_id)
+                except ConflictError as exc:
+                    self._fail_on_resource_conflict(task_id, exc)
                     return self.final_report(task_id)
                 except (AdapterError, TimeoutError, OSError) as exc:
                     detail = str(exc)[:300]
@@ -306,7 +355,35 @@ class Orchestrator:
                     applied_results.append(applied)
                     last_packet_quality = packet_quality
                     break
-                packet_failure = self._model_failure(packet_quality)
+                if self._baseline_preflight_failure(packet_quality, allowed_scope):
+                    self.guided_plans.update_packet(
+                        task_id,
+                        packet["packet_id"],
+                        "blocked",
+                        attempts=packet_attempt,
+                        result_hash=applied["result_hash"],
+                        quality_digest=packet_quality["evidence_digest"],
+                    )
+                    self.audit.append(
+                        "guided-packet.no-model-verdict",
+                        {
+                            "packet_id": packet["packet_id"],
+                            "attempt": packet_attempt,
+                            "classification": "baseline-preflight-infrastructure",
+                            "quality_digest": packet_quality["evidence_digest"],
+                            "repair_consumed": False,
+                        },
+                        system_id=task["system_id"],
+                        task_id=task_id,
+                    )
+                    self.tasks.transition(
+                        task_id,
+                        "FAILED_INFRA",
+                        evidence=[packet_quality["evidence_digest"]],
+                        reason=f"guided packet {packet['packet_id']} quality preflight was blocked by an out-of-scope baseline finding; no model verdict",
+                    )
+                    return self.final_report(task_id)
+                packet_failure = self._model_failure(packet_quality, allowed_scope)
                 if packet_attempt > max_repairs:
                     self.guided_plans.update_packet(task_id, packet["packet_id"], "blocked", attempts=packet_attempt, result_hash=applied["result_hash"], quality_digest=packet_quality["evidence_digest"])
                     self.tasks.transition(task_id, "BLOCKED_QUALITY", reason=f"guided packet {packet['packet_id']} exhausted bounded repairs")
@@ -331,11 +408,62 @@ class Orchestrator:
         }
         return self._verify(task_id, aggregate, targeted, full)
 
-    def _model_failure(self, quality: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _finding_path(finding: str) -> str | None:
+        if ": " not in finding:
+            return None
+        candidate = finding.rsplit(": ", 1)[1].strip()
+        if not candidate or candidate.isdigit() or candidate.startswith("command "):
+            return None
+        return candidate
+
+    @classmethod
+    def _finding_in_scope(cls, finding: str, repo_id: str | None, allowed_scope: dict[str, list[str]]) -> bool:
+        path = cls._finding_path(finding)
+        return bool(repo_id and path and path in allowed_scope.get(repo_id, []))
+
+    @classmethod
+    def _baseline_preflight_failure(cls, quality: dict[str, Any], allowed_scope: dict[str, list[str]]) -> bool:
+        blockers: list[tuple[str | None, str]] = []
+        for gate in quality.get("gates", []):
+            if gate.get("passed") or gate.get("command_id") != "builtin-secret-scan":
+                continue
+            findings = gate.get("findings", [])
+            if not isinstance(findings, list) or not findings:
+                return False
+            blockers.extend((gate.get("repository_id"), finding) for finding in findings if isinstance(finding, str))
+        if not blockers:
+            return False
+        if any(cls._finding_in_scope(finding, repo_id, allowed_scope) for repo_id, finding in blockers):
+            return False
+        return any(
+            gate.get("exit_code") is None
+            and "pre-execution safety gate failed" in " ".join(gate.get("findings", []))
+            for gate in quality.get("gates", [])
+        )
+
+    def _model_failure(self, quality: dict[str, Any], allowed_scope: dict[str, list[str]]) -> dict[str, Any]:
         diagnostics = []
         remaining = 8_000
+        safe_gates = []
         with self.database.connect() as connection:
             for gate in quality.get("gates", []):
+                repo_id = gate.get("repository_id")
+                findings = [
+                    finding
+                    for finding in gate.get("findings", [])
+                    if isinstance(finding, str) and self._finding_in_scope(finding, repo_id, allowed_scope)
+                ]
+                safe_gates.append(
+                    {
+                        "command_id": gate.get("command_id"),
+                        "gate": gate.get("gate"),
+                        "repository_id": repo_id,
+                        "passed": gate.get("passed"),
+                        "exit_code": gate.get("exit_code"),
+                        "findings": findings,
+                    }
+                )
                 digest = gate.get("evidence_digest")
                 if gate.get("passed") or not digest or remaining <= 0:
                     continue
@@ -350,39 +478,107 @@ class Orchestrator:
                 for pattern in SECRET_PATTERNS:
                     if pattern.search(text):
                         raise PolicyDenied("sanitized quality evidence failed the model-context secret check")
-                encoded = text.encode("utf-8")[:remaining]
+                allowed_paths = allowed_scope.get(repo_id, [])
+                scoped_text = "\n".join(
+                    line for line in text.splitlines() if any(path in line for path in allowed_paths)
+                )
+                if not scoped_text:
+                    continue
+                encoded = scoped_text.encode("utf-8")[:remaining]
                 remaining -= len(encoded)
                 diagnostics.append({"gate": gate.get("gate"), "command_id": gate.get("command_id"), "evidence_digest": digest, "output": encoded.decode("utf-8", errors="ignore")})
-        return {**quality, "sanitized_diagnostics": diagnostics}
+        return {**quality, "gates": safe_gates, "sanitized_diagnostics": diagnostics}
 
-    def _guided_prompt(self, task_id: str, plan: dict[str, Any], packet: dict[str, Any], deliverable: dict[str, str], evidence: dict[str, Any], role: str, attempt: int, failure: dict[str, Any] | None) -> str:
+    def _guided_prompt(
+        self,
+        task_id: str,
+        plan: dict[str, Any],
+        packet: dict[str, Any],
+        deliverable: dict[str, str],
+        evidence: dict[str, Any],
+        role: str,
+        attempt: int,
+        failure: dict[str, Any] | None,
+        candidate_overrides: dict[tuple[str, str], str] | None = None,
+    ) -> str:
         task = self.tasks.get(task_id)
         dossier = self.dossier.current(task["system_id"])
         repositories = self.applier._workspaces(task_id)
         context = []
+        seen_context: set[tuple[str, str]] = set()
+        candidate_overrides = candidate_overrides or {}
         modifier_row = self.modifiers.for_task(task_id) if self.modifiers else None
-        budget = min(8_000, modifier_row["modifier"]["context_bytes"] if modifier_row else 8_000)
+        budget = min(
+            GUIDED_CONTEXT_BYTES,
+            modifier_row["modifier"]["context_bytes"] if modifier_row else GUIDED_CONTEXT_BYTES,
+        )
+
+        def add_context(repo_id: str, relative: str, text: str, *, required: bool, source: str) -> None:
+            nonlocal budget
+            data = text.encode("utf-8")
+            if len(data) > GUIDED_FILE_BYTES:
+                raise PolicyDenied(f"required guided context exceeds the per-file limit: {repo_id}:{relative}")
+            if len(data) > budget:
+                if required:
+                    raise PolicyDenied(f"required guided context cannot fit the packet budget: {repo_id}:{relative}")
+                return
+            for pattern in SECRET_PATTERNS:
+                if pattern.search(text):
+                    raise PolicyDenied(f"guided context blocked credential-like content in {repo_id}:{relative}")
+            key = (repo_id, relative)
+            if key in seen_context:
+                return
+            context.append(
+                {
+                    "repo_id": repo_id,
+                    "path": relative,
+                    "hash": sha256_bytes(data),
+                    "content": text,
+                    "required": required,
+                    "source": source,
+                }
+            )
+            seen_context.add(key)
+            budget -= len(data)
+
         for repo_id in packet["repository_ids"]:
             root = repositories[repo_id]
             for relative in packet["context_paths"][repo_id]:
-                candidates = [root / relative] if (root / relative).is_file() else sorted((root / relative).rglob("*")) if (root / relative).is_dir() else []
+                target = root / relative
+                override = candidate_overrides.get((repo_id, relative))
+                if override is not None:
+                    add_context(repo_id, relative, override, required=True, source="same-attempt-candidate")
+                    continue
+                if target.is_symlink():
+                    raise PolicyDenied(f"required guided context is a symlink: {repo_id}:{relative}")
+                if target.is_file():
+                    candidates = [target]
+                elif target.is_dir():
+                    candidates = sorted(target.rglob("*"))
+                else:
+                    raise PolicyDenied(f"required guided context is missing: {repo_id}:{relative}")
                 for path in candidates:
                     if not path.is_file() or path.is_symlink() or ".git" in path.parts:
                         continue
+                    path_relative = path.relative_to(root).as_posix()
+                    override = candidate_overrides.get((repo_id, path_relative))
                     try:
-                        data = path.read_bytes()
-                        text = data.decode("utf-8")
-                    except (OSError, UnicodeDecodeError):
+                        text = override if override is not None else path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as exc:
+                        if target.is_file():
+                            raise PolicyDenied(f"required guided context is unreadable: {repo_id}:{relative}") from exc
                         continue
-                    if len(data) > 32_000 or len(data) > budget:
-                        continue
-                    for pattern in SECRET_PATTERNS:
-                        if pattern.search(text):
-                            raise PolicyDenied(f"local model context blocked credential-like content in {path.name}")
-                    context.append({"repo_id": repo_id, "path": path.relative_to(root).as_posix(), "hash": sha256_bytes(data), "content": text})
-                    budget -= len(data)
-                    if budget < 1024:
-                        break
+                    add_context(
+                        repo_id,
+                        path_relative,
+                        text,
+                        required=target.is_file(),
+                        source="same-attempt-candidate" if override is not None else "workspace-base",
+                    )
+        for (repo_id, relative), text in candidate_overrides.items():
+            add_context(repo_id, relative, text, required=True, source="same-attempt-candidate")
+
+        evidence_items = list(evidence["items"])
         failure_summary = None
         if failure:
             failure_summary = {"scope": failure.get("scope"), "evidence_digest": failure.get("evidence_digest"), "missing_gates": failure.get("missing_gates", []), "safe_detail": failure.get("safe_detail"), "findings": [finding for gate in failure.get("gates", []) for finding in gate.get("findings", [])][:20]}
@@ -399,15 +595,16 @@ class Orchestrator:
             for item in packet["deliverables"]:
                 lines.append(f"- {item['repo_id']}:{item['path']} — {item['purpose']}")
             if context:
-                lines.append("CURRENT FILES (facts; preserve their hashes for edits):")
+                lines.append("CURRENT FILES AND SAME-ATTEMPT CANDIDATES (facts; preserve their hashes for edits):")
                 for item in context:
-                    lines.extend([f"FILE {item['repo_id']}:{item['path']} SHA256={item['hash']}", item["content"], "END FILE"])
+                    label = "SAME-ATTEMPT CANDIDATE" if item["source"] == "same-attempt-candidate" else "WORKSPACE BASE"
+                    lines.extend([f"{label} FILE {item['repo_id']}:{item['path']} SHA256={item['hash']}", item["content"], "END FILE"])
             if packet["research_guidance"]:
                 lines.append("HIGH-MODEL RESEARCH GUIDANCE (apply these implementation facts):")
                 lines.extend(f"- {item}" for item in packet["research_guidance"])
-            if evidence["items"]:
+            if evidence_items:
                 lines.append("OFFICIAL RESEARCH PROVENANCE (raw web text is intentionally withheld from this coding model):")
-                for item in evidence["items"]:
+                for item in evidence_items:
                     lines.append(f"SOURCE {item['source_url']} HASH={item['content_hash']} RETRIEVED={item['retrieved_at']} INJECTION_DETECTED={item['prompt_injection_detected']}")
             if failure_summary:
                 lines.extend(["PREVIOUS ATTEMPT FAILURE (fix it now):", canonical_json(failure_summary).decode("utf-8")])
@@ -421,14 +618,17 @@ class Orchestrator:
             return "\n".join(lines)
 
         encoded = render().encode("utf-8")
-        while len(encoded) > 30_000 and context:
-            context.pop()
+        while len(encoded) > GUIDED_PROMPT_SOFT_BYTES and evidence_items:
+            evidence_items.pop()
             encoded = render().encode("utf-8")
-        while len(encoded) > 30_000 and evidence["items"]:
-            evidence["items"].pop()
+        while len(encoded) > GUIDED_PROMPT_SOFT_BYTES and any(not item["required"] for item in context):
+            for index in range(len(context) - 1, -1, -1):
+                if not context[index]["required"]:
+                    context.pop(index)
+                    break
             encoded = render().encode("utf-8")
-        if len(encoded) > 32_768:
-            raise PolicyDenied("guided packet cannot fit the bounded local model contract")
+        if len(encoded) > GUIDED_PROMPT_HARD_BYTES:
+            raise PolicyDenied("required guided context cannot fit the bounded model contract")
         return encoded.decode("utf-8")
 
     def plan(self, task_id: str) -> dict[str, Any]:
@@ -466,6 +666,17 @@ class Orchestrator:
         task = self.tasks.get(task_id)
         if task["state"] != "WORKSPACES_READY":
             raise PolicyDenied("orchestrated completion requires WORKSPACES_READY")
+        try:
+            self._claim_workspaces(task_id)
+        except ConflictError as exc:
+            # Another task holds a repo this run needs. Ending here rather than
+            # letting it escape is the same contract the driver loop enforces:
+            # an unhandled ConflictError strands the task mid-run. WORKSPACES_READY
+            # has a FAILED_INFRA edge, so this is recoverable once the other
+            # task finishes. final_report releases by owner, so the competitor's
+            # lease is untouched.
+            self._fail_on_resource_conflict(task_id, exc)
+            return self.final_report(task_id)
         self.tasks.transition(task_id, "LOCAL_IMPLEMENTING")
         seen_diffs: set[str] = set()
         last_quality: dict[str, Any] | None = None
@@ -493,6 +704,9 @@ class Orchestrator:
             except PolicyDenied as exc:
                 self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
                 return self.final_report(task_id)
+            except ConflictError as exc:
+                self._fail_on_resource_conflict(task_id, exc)
+                return self.final_report(task_id)
             if result.get("status") == "blocked":
                 self.tasks.transition(task_id, "PAUSED_INPUT", reason=result.get("reason", "local worker requires input"))
                 return self.final_report(task_id)
@@ -507,6 +721,13 @@ class Orchestrator:
                 applied = self.applier.apply(task_id, adapter, attempt, request_hash, result)
             except PolicyDenied as exc:
                 self.tasks.transition(task_id, "BLOCKED_POLICY", reason=str(exc))
+                return self.final_report(task_id)
+            except ConflictError as exc:
+                # Symmetry with the guided loop, whose try already covers apply.
+                # No in-tree applier path raises ConflictError today, but apply
+                # reaches the dossier and guided-plan stores, and an escape here
+                # strands the workspace lease exactly like the driver case did.
+                self._fail_on_resource_conflict(task_id, exc)
                 return self.final_report(task_id)
             except AdapterError:
                 if attempt == attempts:
@@ -572,10 +793,80 @@ class Orchestrator:
             self.audit.append("release.evidence-ready", {"release_id": release_id, "manifest_hash": material["manifest_hash"], "repositories": repositories}, system_id=task["system_id"], task_id=task_id, connection=connection)
         return {"release_id": release_id, **material}
 
+    def _claim_workspaces(self, task_id: str) -> None:
+        """Hold the repo leases for the duration of a run, including a re-run.
+
+        `complete`/`complete_guided` read the workspace manifest directly and
+        never call `workspaces.create`, so the only `leases.acquire` for a
+        repository happened once, when the workspace was first built. A task
+        that ended terminally had those leases released by `final_report`;
+        resuming it and running again therefore drove git worktree and applier
+        writes against the source repository holding NOTHING, while another
+        task was free to take the same repo and do the same concurrently.
+
+        Claiming here rather than in `state.resume` is deliberate: resume is
+        not the only way back into a run, and the invariant that matters is
+        "a run holds its repos", not "resume restores them". Renew-or-acquire,
+        because a task resumed from a PAUSE never lost its leases and re-taking
+        your own must not fail. If a different task now holds the repo this
+        raises ConflictError, which both loops already end cleanly.
+        """
+        if not self.leases:
+            return
+        for repo_id in sorted(self.applier._workspaces(task_id)):
+            self.leases.acquire_or_renew(f"repo:{repo_id}", task_id, ttl_seconds=3600)
+
+    def _fail_on_resource_conflict(self, task_id: str, exc: ConflictError) -> None:
+        """End a task whose worker lost a race for a shared host resource.
+
+        Which resources actually contend across tasks: `ollama:inference`
+        (workers.py) and `subscription:{name}` (subscription_worker.py) are
+        host-global and held for the duration of one call. `api-spend:{task_id}`
+        is NOT one of them -- its key and its owner are both the task itself, so
+        no second task can ever contend for it. An earlier version of this
+        handler claimed otherwise and picked its terminal state accordingly;
+        that was wrong in a way that mattered, see below.
+
+        FAILED_INFRA, not BLOCKED_POLICY. Losing a race for a transient host
+        lock is an infrastructure condition, not a policy judgement, and the
+        distinction is not cosmetic: BLOCKED_POLICY has no outgoing transitions
+        AND no RESUME_TARGETS entry (state.py), so a task parked there can be
+        neither resumed nor cancelled -- permanently dead. FAILED_INFRA is
+        equally terminal for lease-release purposes (both are in
+        TERMINAL_STATES, so final_report frees the workspace lease) but IS
+        resumable, which matches the transient nature of the cause. It is also
+        what complete() already uses for TimeoutError/OSError a few lines above.
+
+        The guard is on edge legality, not on terminality. "Not terminal" does
+        not imply "FAILED_INFRA is reachable": WORKSPACES_READY, PAUSED_INPUT,
+        CLOUD_REVIEWED, RELEASE_EVIDENCE_READY and others are all non-terminal
+        with no FAILED_INFRA edge, and transition() raises ConflictError on an
+        illegal move -- so guarding on terminality alone makes this handler
+        re-raise the very exception it exists to absorb, stranding the lease it
+        exists to release. Doing nothing in that case is correct: those states
+        are either paused (resumable, and meant to keep their workspace) or
+        already ended.
+        """
+        task = self.tasks.get(task_id)
+        current = task["state"]
+        ended = "FAILED_INFRA" in TRANSITIONS.get(current, set())
+        # Audited unconditionally, and BEFORE the transition. The do-nothing
+        # branch is the one that most needs a record: it absorbs a
+        # ConflictError and changes no state, so without this the only
+        # surviving evidence would be a task.transition event that never
+        # happens -- an exception swallowed with no trace anywhere.
+        self.audit.append(
+            "worker.resource-conflict",
+            {"state": current, "ended": ended, "detail": str(exc)[:300]},
+            system_id=task["system_id"], task_id=task_id,
+        )
+        if not ended:
+            return
+        self.tasks.transition(task_id, "FAILED_INFRA", reason=f"worker lost a race for a shared resource: {exc}. Retry with `resume` once the competing task finishes")
+
     def final_report(self, task_id: str) -> dict[str, Any]:
         task = self.tasks.get(task_id)
-        terminal = {"VERIFIED", "BLOCKED_QUALITY", "BLOCKED_POLICY", "FAILED_INFRA", "CANCELLED", "HUMAN_ACCEPTED"}
-        if self.leases and task["state"] in terminal:
+        if self.leases and task["state"] in TERMINAL_STATES:
             self.leases.release_owner(task_id)
         with self.database.connect() as connection:
             quality = [dict(row) for row in connection.execute("SELECT run_id,scope,passed,evidence_digest,created_at FROM quality_runs WHERE task_id=? ORDER BY created_at", (task_id,)).fetchall()]
@@ -630,7 +921,13 @@ class Orchestrator:
             "repositories": sorted(repositories), "context_files": context,
             "failure_summary": None if failure is None else {"scope": failure["scope"], "evidence_digest": failure["evidence_digest"], "missing_gates": failure["missing_gates"], "findings": [finding for gate in failure["gates"] for finding in gate.get("findings", [])][:30]},
             "output_contract": {"status": "ok|blocked|failed", "changed_paths": ["REPO_ID:path"], "operations": [{"repo_id": "registered ID", "path": "relative text file", "action": "write|delete", "content": "required for write", "expected_hash": "current SHA-256 or null for create", "executable": False}]},
-            "rules": ["Return one JSON object only", "Do not include secrets", "Do not change tests merely to force a pass", "Do not run commands", "Use exact current hashes", "List every operation in changed_paths"],
+            # The secret rule states the convention the output is GRADED
+            # against. It used to say only "Do not include secrets" while the
+            # scanners silently required one of a specific set of forms, so a
+            # model that invented its own placeholder failed the whole run with
+            # no way to know the rule. Enforcement without instruction is a
+            # rejection loop; keep this list in step with SECRET_PATTERNS.
+            "rules": ["Return one JSON object only", "Never write a literal credential. Reference secrets only as os.environ[\"NAME\"], getenv(\"NAME\"), settings.NAME, config.NAME, vault.get(...), or secret_ref, or use the exact literal \"placeholder\"; any other credential-like literal is rejected and the run fails", "Do not change tests merely to force a pass", "Do not run commands", "Use exact current hashes", "List every operation in changed_paths"],
         }
         encoded = canonical_json(request)
         while len(encoded) > 30_000 and request["context_files"]:

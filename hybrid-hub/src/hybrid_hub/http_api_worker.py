@@ -13,6 +13,7 @@ from .cloud import ProviderProfile, ProviderProfileStore
 from .errors import AdapterError, AuthorizationRequired, PolicyDenied, ValidationError
 from .leases import LeaseManager
 from .model_store import load_record, write_record
+from .policy import require_cloud_egress
 from .secrets import api_key_age_days, read_api_key_file, redact_exact
 from .storage import Database
 from .util import bounded_text, sha256_bytes, sha256_json, utc_now
@@ -251,11 +252,17 @@ class HttpApiWorker:
         if self.database.emergency_stopped():
             raise PolicyDenied("emergency stop is active")
         with self.database.connect() as connection:
-            task = connection.execute("SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved FROM tasks JOIN systems USING(system_id) WHERE task_id=?", (task_id,)).fetchone()
+            task = connection.execute("SELECT tasks.cancelled,tasks.system_id,tasks.state,systems.approved,systems.profiles_json FROM tasks JOIN systems USING(system_id) WHERE task_id=?", (task_id,)).fetchone()
         if not task or task["cancelled"] or not task["approved"]:
             raise PolicyDenied("task unavailable or cancelled")
         if task["state"] not in {"WORKSPACES_READY", "LOCAL_IMPLEMENTING", "LOCAL_REPAIRING", "LOCAL_FIXING"}:
             raise PolicyDenied("task state does not permit an HTTP API file worker run")
+        # Classification egress gate -- see the same call in subscription_worker.
+        # This adapter POSTs source to a vendor endpoint, so it is a
+        # transmitting boundary and a cloud_code_egress False system must not
+        # reach it. Placed before the key is read and before any spend, so a
+        # denied system never touches a credential or costs money.
+        require_cloud_egress(json.loads(task["profiles_json"]))
         system_id = task["system_id"]
         self._authorize(system_id)
         cap = float(self.config.max_task_cost_usd)

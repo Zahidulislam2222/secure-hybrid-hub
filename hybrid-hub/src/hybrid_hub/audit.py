@@ -9,8 +9,30 @@ from typing import Any
 from .storage import Database
 from .util import canonical_json, sha256_bytes, utc_now
 
+# The one definition of "this assignment references a secret rather than
+# containing one". Every credential scanner in the package composes this, so
+# the three copies that used to drift apart cannot any more.
+#
+# Two shapes are exempt, and the difference matters:
+#   * Code references (os.environ, getenv(, vault., secret_ref, ...) are
+#     matched as PREFIXES, because they begin an expression whose remainder is
+#     arbitrary and harmless -- there is no literal to leak.
+#   * Literal placeholders (REDACTED, placeholder, test-...) must TERMINATE the
+#     value: the literal is followed by an optional quote and then whitespace,
+#     a delimiter, or end of line.
+#
+# That terminator is the whole point. Matching literals as prefixes -- which an
+# earlier version of this file did, and which quality.py and egress.py did from
+# the start -- exempts any value that merely BEGINS with an approved word, so
+# `api_key = "test-sk-ant-api03-<real key>"`, `secret = "REDACTEDsk-live-..."`
+# and `AWS_SECRET = "placeholderAKIA..."` all read as compliant. Models name
+# keys `test-` constantly, so that is a realistic leak, not a contrived one.
+# The bounded tail on test values (<= 12 chars) keeps `test-value` legal while
+# refusing `test-AKIAIOSFODNN7EXAMPLE`.
+CREDENTIAL_EXEMPTION = r"(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|['\"]?(?:\[?REDACTED\]?|placeholder|test[-_][A-Za-z0-9._-]{0,12})['\"]?(?:[\s,;)\]}]|$))"
+
 SECRET_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|\[?REDACTED\]?|placeholder|test[-_]))[^\s,;]+"),
+    re.compile(r"(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*(?!" + CREDENTIAL_EXEMPTION + r")[^\s,;]+"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"hh_test_CANARY_[A-Z0-9_]+"),
 ]

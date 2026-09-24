@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .audit import AuditLog, SECRET_PATTERNS
+from .audit import CREDENTIAL_EXEMPTION, AuditLog, SECRET_PATTERNS
 from .errors import ConflictError, PolicyDenied, ValidationError
 from .policy import compose
 from .secrets import assert_secret_absent, redact_exact
@@ -20,7 +20,10 @@ BIDI = re.compile("[\u202a-\u202e\u2066-\u2069]")
 DLP_PATTERNS = [
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     ("connection-string", re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s]+")),
-    ("credential", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)[ \t]*[:=][ \t]*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|['\"]?(?:placeholder|redacted|test[-_])))['\"]?[^\s,'\";]{8,}")),
+    # Shares audit.CREDENTIAL_EXEMPTION -- see the note there. This scanner
+    # guards the bundle that leaves the machine, so a prefix-only exemption was
+    # the worst place of the three to have one.
+    ("credential", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)[ \t]*[:=][ \t]*(?!" + CREDENTIAL_EXEMPTION + r")['\"]?[^\s,'\";]{8,}")),
     ("phi", re.compile(r"(?i)\b(?:patient|medical record|diagnosis)\b.{0,60}\b(?:name|dob|mrn|address|email|phone)\b")),
     ("pii", re.compile(r"(?i)\b(?:ssn|social security|passport|national id)\b\s*[:=]?\s*[A-Z0-9-]{5,}")),
     ("privileged", re.compile(r"(?i)\b(?:attorney[- ]client privileged|privileged legal communication|work product)\b")),

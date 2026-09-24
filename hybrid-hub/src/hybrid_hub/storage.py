@@ -3,11 +3,22 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .errors import PolicyDenied
 from .util import canonical_json, sha256_bytes, utc_now
+
+
+def _require_mode(path: Path, expected: int, label: str) -> None:
+    observed = stat.S_IMODE(path.stat().st_mode)
+    if observed != expected:
+        raise PolicyDenied(
+            f"{label} cannot enforce required owner-only permissions "
+            f"{oct(expected)}; observed {oct(observed)}"
+        )
 
 
 class RuntimeLayout:
@@ -26,9 +37,29 @@ class RuntimeLayout:
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
+        _require_mode(self.root, 0o700, "runtime filesystem")
         for path in (self.artifacts, self.workspaces, self.evidence, self.egress, self.cache, self.locks, self.operations, self.backups):
             path.mkdir(exist_ok=True, mode=0o700)
             os.chmod(path, 0o700)
+            _require_mode(path, 0o700, "runtime filesystem")
+        self._verify_private_file_capability()
+
+    def _verify_private_file_capability(self) -> None:
+        probe = self.root / ".permission-capability-probe"
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(probe, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            observed = stat.S_IMODE(os.fstat(descriptor).st_mode)
+            if observed != 0o600:
+                raise PolicyDenied(
+                    "runtime filesystem cannot enforce required owner-only "
+                    f"file permissions 0o600; observed {oct(observed)}"
+                )
+        finally:
+            os.close(descriptor)
+            probe.unlink(missing_ok=True)
 
 
 SCHEMA = """
@@ -196,13 +227,26 @@ class Database:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             connection.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('emergency_stop','0')")
+        self._protect_database_files()
+
+    def _protect_database_files(self) -> None:
+        for path in (
+            self.layout.db,
+            Path(f"{self.layout.db}-wal"),
+            Path(f"{self.layout.db}-shm"),
+        ):
+            if path.exists():
+                os.chmod(path, 0o600)
+                _require_mode(path, 0o600, "runtime database")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.layout.db, timeout=10, isolation_level=None)
+        self._protect_database_files()
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
+        self._protect_database_files()
         try:
             yield connection
         finally:

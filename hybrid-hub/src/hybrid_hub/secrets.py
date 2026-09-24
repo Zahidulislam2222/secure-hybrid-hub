@@ -19,10 +19,20 @@ from typing import Any
 
 from .audit import AuditLog, SECRET_PATTERNS, sanitize
 from .errors import AdapterError, ConflictError, PolicyDenied, ValidationError
+from .sandbox_exec import inherited_outer_sandbox
 from .storage import Database
 from .util import bounded_text, canonical_json, require_id, sha256_bytes, sha256_json, utc_now
 
 
+# Fork budget granted to a secret capability, ON TOP of the processes this UID
+# already owns. RLIMIT_NPROC is charged per-UID against the REAL uid, not
+# per-process and not per-namespace, so a fixed value silently couples the
+# sandbox's ability to START to how busy the rest of the machine is. The old
+# fixed 64 could not even launch `unshare --user --map-root-user ... --fork`
+# with 12 processes running, which is what made test_security_phase6 flap and
+# get misdiagnosed as memory starvation. Headroom, not a ceiling: still bounds
+# a fork bomb, no longer depends on ambient load.
+SANDBOX_PROCESS_HEADROOM = 256
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 API_KEY_LINE = re.compile(r"^[A-Za-z0-9._~+/=-]{16,512}$")
 
@@ -92,15 +102,15 @@ class SyntheticMemoryBackend(SecretBackend):
             raise PolicyDenied("approved synthetic secret identifier is unavailable") from exc
 
 
-def secret_variants(secret: str) -> set[str]:
-    encoded = secret.encode("utf-8")
+def secret_variants(value: str) -> set[str]:
+    encoded = value.encode("utf-8")
     return {
-        secret,
+        value,
         base64.b64encode(encoded).decode("ascii"),
         base64.urlsafe_b64encode(encoded).decode("ascii"),
         encoded.hex(),
-        urllib.parse.quote(secret, safe=""),
-        json.dumps(secret)[1:-1],
+        urllib.parse.quote(value, safe=""),
+        json.dumps(value)[1:-1],
     }
 
 
@@ -211,12 +221,17 @@ class SecretRunner:
         if not unshare:
             raise PolicyDenied("secret runner isolation is unavailable")
         environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(execution), "TMPDIR": str(execution), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8", "NO_PROXY": "*", "no_proxy": "*", **values}
-        command = [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox), "--allow-root", str(execution), "--", executable, *arguments]
+        inherited_root = inherited_outer_sandbox(self.database.layout.root)
+        command = (
+            [sys.executable, str(self._sandbox), "--allow-root", str(execution), "--", executable, *arguments]
+            if inherited_root is not None
+            else [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox), "--allow-root", str(execution), "--", executable, *arguments]
+        )
         started = time.monotonic()
         with tempfile.NamedTemporaryFile(dir=execution, delete=False) as output:
             output_path = Path(output.name)
             try:
-                process = subprocess.Popen(command, cwd=execution, env=environment, stdout=output, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=self._limits(specification["timeout_seconds"], specification["max_output_bytes"]))
+                process = subprocess.Popen(command, cwd=execution, env=environment, stdout=output, stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=self._limits(specification["timeout_seconds"], specification["max_output_bytes"], inherited=inherited_root is not None))
                 try:
                     exit_code = process.wait(timeout=specification["timeout_seconds"])
                 except subprocess.TimeoutExpired:
@@ -236,6 +251,19 @@ class SecretRunner:
         redacted = redact_exact(text, secret_values)
         redacted = sanitize(redacted)
         assert_secret_absent(redacted, secret_values)
+        # Distinguish "the isolation layer could not start" from "the capability
+        # ran and failed". unshare prefixes its own setup errors with "unshare: "
+        # and exits nonzero WITHOUT ever exec'ing the capability -- on a
+        # resource-starved host that is `unshare: fork failed: Resource
+        # temporarily unavailable`. Reported as a normal result it became
+        # passed=False with the error text standing in for the capability's
+        # output, so a redaction assertion failed on content that was never
+        # generated and the suite reported a SECURITY-CONTROL failure for an
+        # infrastructure condition. The dangerous direction is the mirror image:
+        # a run that looks like a verdict while isolation is degraded. Neither
+        # is a verdict, so refuse to produce one.
+        if exit_code != 0 and redacted.startswith("unshare: "):
+            raise AdapterError(f"secret capability isolation could not start: {redacted.strip()[:200]}")
         evidence_digest = self.database.put_artifact(redacted.encode("utf-8"), "text/plain; charset=utf-8")
         result = {"capability_id": capability_id, "capability_hash": capability["capability_hash"], "task_id": task_id, "backend": backend.name, "environment": specification["environment"], "exit_code": exit_code, "passed": exit_code == 0, "evidence_digest": evidence_digest, "output_hash": sha256_bytes(redacted.encode()), "duration_ms": int((time.monotonic() - started) * 1000), "secret_values_exposed": False}
         self.audit.append("secret.capability-completed", result, system_id=task["system_id"], task_id=task_id)
@@ -255,12 +283,35 @@ class SecretRunner:
         return executable, argv[1:]
 
     @staticmethod
-    def _limits(timeout: int, output_bytes: int):
+    def _owned_process_count() -> int:
+        """Processes the real UID already owns, which RLIMIT_NPROC counts too."""
+        uid = os.getuid()
+        count = 0
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                if os.stat(f"/proc/{entry}").st_uid == uid:
+                    count += 1
+            except OSError:
+                continue
+        return count
+
+    @classmethod
+    def _limits(cls, timeout: int, output_bytes: int, *, inherited: bool = False):
+        # Computed in the PARENT, before fork: reading /proc from inside
+        # preexec_fn would run after the namespaces are being set up, and
+        # preexec_fn must stay minimal and async-signal-safe.
+        nproc_hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+        nproc = SANDBOX_PROCESS_HEADROOM if inherited else cls._owned_process_count() + SANDBOX_PROCESS_HEADROOM
+        if nproc_hard != resource.RLIM_INFINITY:
+            nproc = min(nproc, nproc_hard)
+
         def apply() -> None:
             resource.setrlimit(resource.RLIMIT_CPU, (timeout + 5, timeout + 5))
             resource.setrlimit(resource.RLIMIT_FSIZE, (output_bytes + 4096, output_bytes + 4096))
             resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-            resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+            resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
             memory = 1024 * 1024 * 1024
             resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
         return apply

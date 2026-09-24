@@ -5,6 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- Refresh both READMEs and operational guides for the open-source local broker.
+  Correct blanket phase-completion claims and clarify remaining release gates.
+- Add public frontend/API, backend architecture, security, privacy/legal,
+  reliability, scale, roadmap and release guides. The 1M+ simultaneous-user and
+  availability numbers are future targets with explicit validation requirements.
+- Document self-hosting, community contribution and operator responsibilities;
+  retain the Apache-2.0 license and distinguish optional distributed deployment.
+
+### Security
+
+- Data-classification egress is now enforced at the boundaries that actually
+  transmit. A system whose classification forbids sending source to a vendor
+  (`confidential`, `healthcare`, `legal`, `gdpr`, `financial`, `high-secret`,
+  `production-critical`) is refused by the subscription-CLI and HTTP API
+  workers before any subprocess starts, any credential is read, or any spend
+  occurs. Previously the control could not take effect at all: the policy
+  helper was called from nowhere in the package, and the composed value it
+  would have consulted was unconditionally false for every classification —
+  including the permissive ones — so it could not distinguish a healthcare
+  system from a standard one. Systems whose classification permits egress are
+  unaffected and still require the existing human-approved provider profile.
+
+### Fixed
+
+- A resource conflict raised by a coding worker (a contended host-global lock
+  such as local inference or a subscription CLI) is now caught by the
+  orchestrator, which ends the task in a recoverable terminal state so the
+  final report releases its workspace lease. Previously the exception escaped
+  orchestration entirely and left the task holding that lease, which made every
+  later run on the same repository fail with `resource already leased` until the
+  stuck task was cancelled by hand.
+- A run now re-acquires its repository leases when it starts, including after
+  recovery. A task that ended terminally had its leases released and could
+  previously be resumed and re-run holding nothing, so a second task could take
+  the same repository and write to it concurrently.
+- A guided task can be resumed and re-run. Repeating a packet at the same
+  status and attempt re-emitted an identical dossier checkpoint and failed on a
+  uniqueness constraint, wedging the task with the worker never invoked.
+- Secret-capability isolation failures are reported as infrastructure errors
+  instead of as a failed security control, and the sandbox's process limit no
+  longer depends on how many processes the host user happens to be running —
+  which previously stopped the sandbox from starting at all under normal load.
+- The credential scanner no longer rejects the quoted placeholder forms it
+  documents (`"placeholder"`, `"test-..."`), which failed otherwise-correct runs.
+- Model prompts now state the secret-referencing convention the output is
+  graded against, rather than enforcing it silently.
+- The framing-token allowance now has a single owner. The CLI no longer
+  substitutes its own copy of the default when the flag is omitted.
+
 ## [0.11.0] - 2026-07-20
 
 ### Added

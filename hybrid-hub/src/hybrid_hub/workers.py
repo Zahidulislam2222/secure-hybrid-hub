@@ -31,10 +31,16 @@ def _validate_loopback(endpoint: str) -> str:
         raise PolicyDenied("local adapter endpoint must be unauthenticated loopback HTTP")
     if parsed.path not in {"", "/"} or not parsed.hostname or parsed.port != 11434:
         raise PolicyDenied("local adapter endpoint must be the Ollama loopback port")
-    try:
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise AdapterError("local adapter hostname cannot be resolved") from exc
+    if parsed.hostname == "localhost":
+        addresses = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", parsed.port)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", parsed.port, 0, 0)),
+        ]
+    else:
+        try:
+            addresses = socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise AdapterError("local adapter hostname cannot be resolved") from exc
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_loopback for item in addresses):
         raise PolicyDenied("local adapter endpoint resolved outside loopback")
     return f"http://{parsed.hostname}:{parsed.port}"

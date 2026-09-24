@@ -14,10 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .audit import AuditLog, SECRET_PATTERNS, sanitize
+from .audit import CREDENTIAL_EXEMPTION, AuditLog, SECRET_PATTERNS, sanitize
 from .dossier import DossierStore
 from .errors import AdapterError, ConflictError, PolicyDenied, ValidationError
 from .policy import compose
+from .sandbox_exec import inherited_outer_sandbox
 from .storage import Database
 from .topology import Topology
 from .util import canonical_json, require_id, sha256_bytes, sha256_json, utc_now
@@ -35,7 +36,10 @@ DESTRUCTIVE_SQL = re.compile(r"(?i)\b(?:DROP\s+(?:TABLE|COLUMN|DATABASE)|TRUNCAT
 SENSITIVE_CONTENT = [
     ("synthetic-canary", re.compile(r"hh_test_CANARY_[A-Z0-9_]+")),
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
-    ("credential-assignment", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)\s*[:=]\s*(?!(?:os\.|process\.env|env\[|getenv\(|settings\.|config\.|vault\.|secret_ref|['\"]?(?:placeholder|redacted|test[-_])))['\"]?[^\s,'\";]{8,}")),
+    # Shares audit.CREDENTIAL_EXEMPTION so this cannot drift from the scanner
+    # that gates model output. It previously matched literal placeholders as
+    # PREFIXES, exempting a placeholder followed by real key material.
+    ("credential-assignment", re.compile(r"(?i)(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)\s*[:=]\s*(?!" + CREDENTIAL_EXEMPTION + r")['\"]?[^\s,'\";]{8,}")),
 ]
 CLASSIFICATION_CONTENT = {
     "phi-scan": re.compile(r"(?i)\b(?:patient|medical record|diagnosis|health plan)\b.{0,40}\b(?:name|id|dob|address|email|phone)\b"),
@@ -488,16 +492,22 @@ class QualityRunner:
         self._copy_snapshot(root, snapshot)
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
         cwd = snapshot / source_cwd.relative_to(root)
-        if not self._isolation_available(unshare, execution_root):
+        inherited_root = inherited_outer_sandbox(self.database.layout.root)
+        if inherited_root is None and not self._isolation_available(unshare, execution_root):
             raise PolicyDenied("kernel namespace and Landlock isolation is unavailable")
         environment = {
             "PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(home),
             "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8",
             "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "*", "no_proxy": "*",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         }
-        command = [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox_script), "--allow-root", str(execution_root), "--", executable, *arguments]
+        command = (
+            [sys.executable, str(self._sandbox_script), "--allow-root", str(execution_root), "--", executable, *arguments]
+            if inherited_root is not None
+            else [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox_script), "--allow-root", str(execution_root), "--", executable, *arguments]
+        )
         exit_code, duration_ms, evidence_digest, output_hash, findings = self._run_bounded(command, cwd, environment, spec.timeout_seconds)
-        return {"command_id": spec.command_id, "gate": spec.gate, "repository_id": repository["repo_id"], "component": spec.component, "passed": exit_code == 0 and not findings, "exit_code": exit_code, "duration_ms": duration_ms, "evidence_digest": evidence_digest, "output_hash": output_hash, "findings": findings}
+        return {"command_id": spec.command_id, "gate": spec.gate, "repository_id": repository["repo_id"], "component": spec.component, "passed": exit_code == 0 and not findings, "exit_code": exit_code, "duration_ms": duration_ms, "evidence_digest": evidence_digest, "output_hash": output_hash, "findings": findings, "isolation_mode": "inherited-verified-outer-sandbox" if inherited_root is not None else "new-landlock-user-network-namespaces"}
 
     def _run_bounded(self, command: list[str], cwd: Path, environment: dict[str, str], timeout: int) -> tuple[int, int, str, str, list[str]]:
         started = __import__("time").monotonic()
@@ -547,12 +557,17 @@ class QualityRunner:
         if executable.lower().endswith(".exe"):
             raise PolicyDenied("Windows executables cannot be isolated by the WSL quality runner")
         unshare = shutil.which("unshare", path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-        if not unshare or not self._isolation_available(unshare, execution_root):
+        inherited_root = inherited_outer_sandbox(self.database.layout.root)
+        if not unshare or (inherited_root is None and not self._isolation_available(unshare, execution_root)):
             raise PolicyDenied("kernel namespace and Landlock isolation is unavailable")
-        environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(home), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "*", "no_proxy": "*"}
-        command = [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox_script), "--allow-root", str(execution_root), "--", executable, *arguments]
+        environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(home), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "*", "no_proxy": "*", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+        command = (
+            [sys.executable, str(self._sandbox_script), "--allow-root", str(execution_root), "--", executable, *arguments]
+            if inherited_root is not None
+            else [unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox_script), "--allow-root", str(execution_root), "--", executable, *arguments]
+        )
         exit_code, duration_ms, evidence_digest, output_hash, findings = self._run_bounded(command, cwd, environment, spec.timeout_seconds)
-        return {"command_id": spec.command_id, "gate": spec.gate, "repository_id": None, "covered_repositories": [item["repo_id"] for item in repositories], "component": None, "passed": exit_code == 0 and not findings, "exit_code": exit_code, "duration_ms": duration_ms, "evidence_digest": evidence_digest, "output_hash": output_hash, "findings": findings}
+        return {"command_id": spec.command_id, "gate": spec.gate, "repository_id": None, "covered_repositories": [item["repo_id"] for item in repositories], "component": None, "passed": exit_code == 0 and not findings, "exit_code": exit_code, "duration_ms": duration_ms, "evidence_digest": evidence_digest, "output_hash": output_hash, "findings": findings, "isolation_mode": "inherited-verified-outer-sandbox" if inherited_root is not None else "new-landlock-user-network-namespaces"}
 
     def _copy_snapshot(self, source: Path, destination: Path) -> None:
         destination.mkdir(parents=True, mode=0o700)
@@ -584,6 +599,7 @@ class QualityRunner:
             return False
         result = subprocess.run([unshare, "--user", "--map-root-user", "--net", "--pid", "--ipc", "--uts", "--fork", sys.executable, str(self._sandbox_script), "--allow-root", str(allow_root), "--", true_executable], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
         return result.returncode == 0
+
 
     @staticmethod
     def _limits(timeout: int):

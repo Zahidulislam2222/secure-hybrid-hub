@@ -6,8 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hybrid_hub.errors import PolicyDenied
+from hybrid_hub.errors import AdapterError, ConflictError, PolicyDenied
 from hybrid_hub.hub import Hub
+from hybrid_hub.util import sha256_bytes
 
 
 def git_repo(path: Path) -> None:
@@ -114,11 +115,188 @@ class GuidedOrchestrationTests(unittest.TestCase):
         self.assertEqual(report["research_evidence_count"], 1)
         self.assertEqual([item["packet"] for item in observations], ["core", "core", "tests"])
         self.assertEqual([item["target"] for item in observations], ["app.py", "tests/test_app.py", "tests/test_app.py"])
+        core_candidate = "def add(left, right):\n    return left + right\n"
+        candidate_header = (
+            f"SAME-ATTEMPT CANDIDATE FILE {self.repo_id}:app.py "
+            f"SHA256={sha256_bytes(core_candidate.encode('utf-8'))}"
+        )
+        self.assertIn(candidate_header, observations[1]["prompt"])
+        self.assertIn(core_candidate, observations[1]["prompt"])
         self.assertIn(self.evidence["source_url"], observations[-1]["prompt"])
         self.assertIn(self.evidence["content_hash"], observations[-1]["prompt"])
         self.assertTrue((workspace / "app.py").is_file())
         self.assertTrue((workspace / "tests" / "test_app.py").is_file())
         self.assertTrue(report["audit_valid"])
+
+    def test_required_context_over_old_ceiling_is_included_with_exact_hash(self):
+        large_context = "# Synthetic context\n" + ("bounded-context-line\n" * 500)
+        (self.project / "README.md").write_text(large_context, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.project), "add", "README.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.project),
+                "-c",
+                "user.name=Guided Tests",
+                "-c",
+                "user.email=guided@example.invalid",
+                "commit",
+                "-qm",
+                "large synthetic context",
+            ],
+            check=True,
+        )
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        prompts = []
+        contents = {
+            "app.py": "def add(left, right):\n    return left + right\n",
+            "tests/test_app.py": "import unittest\nfrom app import add\nclass T(unittest.TestCase):\n    def test_values(self):\n        self.assertEqual(add(2, 3), 5)\n",
+        }
+
+        def driver(_task_id, prompt, *_):
+            prompts.append(prompt)
+            target = prompt.split("GENERATE THIS ONE FILE NOW: ", 1)[1].splitlines()[0].split(":", 1)[1]
+            return {"status": "ok", "changed_paths": [], "content": contents[target]}
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, driver, adapter="codex-local")
+        self.assertTrue(report["verified"], report)
+        self.assertGreater(len(large_context.encode("utf-8")), 8_000)
+        expected = f"WORKSPACE BASE FILE {self.repo_id}:README.md SHA256={sha256_bytes(large_context.encode('utf-8'))}"
+        self.assertIn(expected, prompts[0])
+        self.assertIn(large_context, prompts[0])
+
+    def test_required_context_that_cannot_fit_blocks_before_driver(self):
+        oversized = "x" * 24_001
+        (self.project / "BIG.md").write_text(oversized, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.project), "add", "BIG.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.project),
+                "-c",
+                "user.name=Guided Tests",
+                "-c",
+                "user.email=guided@example.invalid",
+                "commit",
+                "-qm",
+                "oversized synthetic context",
+            ],
+            check=True,
+        )
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        plan["packets"][0]["context_paths"][self.repo_id] = ["BIG.md"]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        called = []
+        report = self.hub.orchestrator.complete_guided(
+            self.task_id,
+            lambda *_: called.append(True),
+            adapter="codex-local",
+        )
+        self.assertEqual(report["task"]["state"], "BLOCKED_POLICY")
+        self.assertIn("cannot fit the packet budget", report["task"]["reason"])
+        self.assertEqual(called, [])
+
+    def test_later_deliverable_failure_applies_no_candidate_files(self):
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace_result = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        workspace = Path(workspace_result["repositories"][0]["workspace"])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace_result["manifest_hash"]])
+        calls = []
+
+        def driver(_task_id, _prompt, *_):
+            calls.append(1)
+            if len(calls) == 1:
+                return {"status": "ok", "changed_paths": [], "content": "def add(left, right):\n    return left + right\n"}
+            raise AdapterError("synthetic later deliverable failure")
+
+        report = self.hub.orchestrator.complete_guided(
+            self.task_id,
+            driver,
+            adapter="codex-local",
+            max_repairs=0,
+        )
+        self.assertEqual(report["task"]["state"], "BLOCKED_QUALITY")
+        self.assertFalse((workspace / "app.py").exists())
+        self.assertFalse((workspace / "tests" / "test_app.py").exists())
+        self.assertEqual(report["implementation_attempts"], [])
+
+    def test_out_of_scope_baseline_preflight_has_no_model_verdict_or_repair(self):
+        plan = self.plan()
+        plan["packets"] = [plan["packets"][0]]
+        self.hub.orchestrator.submit_guided_plan(self.task_id, plan, "synthetic-acceptance")
+        workspace = self.hub.workspaces.create(self.task_id, [self.repo_id])
+        self.hub.tasks.transition(self.task_id, "WORKSPACES_READY", evidence=[workspace["manifest_hash"]])
+        calls = []
+        contents = {
+            "app.py": "def add(left, right):\n    return left + right\n",
+            "tests/test_app.py": "import unittest\nfrom app import add\nclass T(unittest.TestCase):\n    def test_values(self):\n        self.assertEqual(add(2, 3), 5)\n",
+        }
+
+        def driver(_task_id, prompt, *_):
+            calls.append(1)
+            target = prompt.split("GENERATE THIS ONE FILE NOW: ", 1)[1].splitlines()[0].split(":", 1)[1]
+            return {"status": "ok", "changed_paths": [], "content": contents[target]}
+
+        quality = {
+            "passed": False,
+            "evidence_digest": "a" * 64,
+            "missing_gates": ["secret-scan", "unit"],
+            "gates": [
+                {
+                    "command_id": "builtin-secret-scan",
+                    "gate": "secret-scan",
+                    "repository_id": self.repo_id,
+                    "passed": False,
+                    "exit_code": 1,
+                    "evidence_digest": None,
+                    "findings": [
+                        "environment-value file is forbidden in a coding workspace: tests/fixtures/security/.env.synthetic"
+                    ],
+                },
+                {
+                    "command_id": "synthetic-unit",
+                    "gate": "unit",
+                    "repository_id": self.repo_id,
+                    "passed": False,
+                    "exit_code": None,
+                    "evidence_digest": None,
+                    "findings": ["command not executed because a pre-execution safety gate failed"],
+                },
+            ],
+        }
+        original_run = self.hub.quality.run
+        self.hub.quality.run = lambda *_: quality
+        try:
+            report = self.hub.orchestrator.complete_guided(
+                self.task_id,
+                driver,
+                adapter="codex-local",
+                max_repairs=3,
+            )
+        finally:
+            self.hub.quality.run = original_run
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.assertIn("no model verdict", report["task"]["reason"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report["guided_packets"][0]["attempts"], 1)
+        with self.hub.database.connect() as connection:
+            event = connection.execute(
+                "SELECT payload_json FROM audit_events WHERE event_type='guided-packet.no-model-verdict' AND task_id=?",
+                (self.task_id,),
+            ).fetchone()
+        self.assertIsNotNone(event)
+        self.assertFalse(json.loads(event[0])["repair_consumed"])
 
     def test_deliverable_outside_supervisor_allowed_paths_is_blocked(self):
         plan = self.plan()
@@ -148,6 +326,107 @@ class GuidedOrchestrationTests(unittest.TestCase):
         self.assertEqual(report["task"]["state"], "PAUSED_AUTH")
         self.assertFalse(report["verified"])
         self.assertEqual(called, [])
+
+    def assertLeaseIsGenuinelyFree(self, resource: str):
+        """Prove release, not mere absence from the listing.
+
+        leases.list() deletes expired rows before returning, so a lease that
+        merely timed out is indistinguishable from one that was released. Only
+        a successful acquire by a different owner proves the resource is free.
+        """
+        self.hub.leases.acquire(resource, "probe-owner", ttl_seconds=60)
+        self.hub.leases.release_owner("probe-owner")
+
+    def test_worker_resource_conflict_ends_the_task_recoverably_and_frees_the_lease(self):
+        # Trigger: the worker lost a race for a host-global lock -- in-tree those
+        # are ollama:inference (workers.py) and subscription:{name}. NOT the
+        # api-spend lease: its key and owner are both the task itself, so no
+        # second task can contend for it. Before the handler existed this escaped
+        # complete_guided and left the task in LOCAL_IMPLEMENTING still holding
+        # its workspace lease.
+        self.ready()
+
+        def conflicted(*_):
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, conflicted, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        # FAILED_INFRA, not BLOCKED_POLICY: the latter has no outgoing edge and
+        # no RESUME_TARGETS entry, so it would leave the task unrecoverable --
+        # worse than the strand this handler replaced.
+        self.assertEqual(report["task"]["state"], "FAILED_INFRA")
+        self.assertIn("shared resource", report["task"]["reason"])
+        self.assertLeaseIsGenuinelyFree(f"repo:{self.repo_id}")
+        # Recovery must actually WORK, which is the whole point of choosing a
+        # resumable state. An earlier version of this test stopped after
+        # asserting resume() wrote the row resume() had just written -- a
+        # tautology that restates FAILED_INFRA in RESUME_TARGETS and passed
+        # while the re-run below died on a duplicate guided checkpoint
+        # (sqlite3.IntegrityError, driver never called, task wedged in
+        # LOCAL_IMPLEMENTING). Drive the recovery the reason string advertises.
+        self.hub.tasks.resume(self.task_id, "WORKSPACES_READY")
+        calls = []
+
+        def succeeding(_task_id, packet, *_args, **_kwargs):
+            calls.append(packet)
+            return {"status": "completed", "changed_paths": [], "summary": "ok"}
+
+        rerun = self.hub.orchestrator.complete_guided(self.task_id, succeeding, adapter="codex-local")
+        self.assertTrue(calls, "the re-run never reached the driver")
+        self.assertNotIn(rerun["task"]["state"], {"LOCAL_IMPLEMENTING", "FAILED_INFRA"})
+
+    def test_a_paused_run_keeps_its_workspace_lease(self):
+        # PAIRED NEGATIVE for the test above. Without this, an implementation
+        # that released leases unconditionally would pass every conflict test.
+        # A pause is non-terminal and resumable, so the task must KEEP its
+        # workspace -- releasing it would let another task claim the repo out
+        # from under a run the operator intends to resume.
+        self.ready()
+
+        def pausing(*_):
+            return {"status": "blocked", "reason": "needs a human decision", "changed_paths": []}
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, pausing, adapter="codex-local")
+        self.assertEqual(report["task"]["state"], "PAUSED_INPUT")
+        held = [item["resource"] for item in self.hub.leases.list() if item["owner"] == self.task_id]
+        self.assertIn(f"repo:{self.repo_id}", held)
+        with self.assertRaises(ConflictError):
+            self.hub.leases.acquire(f"repo:{self.repo_id}", "probe-owner", ttl_seconds=60)
+
+    def test_conflict_from_a_state_with_no_failed_infra_edge_does_not_raise(self):
+        # The handler shares its try block with a tasks.transition call, and
+        # transition() raises ConflictError on an ILLEGAL move -- so a handler
+        # that transitions unconditionally re-raises the exception it exists to
+        # absorb. Guarding on "is terminal" is NOT sufficient: PAUSED_INPUT is
+        # non-terminal and has no FAILED_INFRA edge. This drives the task there
+        # first, which is a legal move from LOCAL_IMPLEMENTING, then conflicts.
+        self.ready()
+
+        def paused_then_conflict(task_id, *_):
+            self.hub.tasks.transition(task_id, "PAUSED_INPUT", reason="synthetic pause")
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, paused_then_conflict, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        # State preserved, no exception escaped, and the pause keeps its lease.
+        self.assertEqual(report["task"]["state"], "PAUSED_INPUT")
+        self.assertIn("synthetic pause", report["task"]["reason"])
+        self.assertIn(f"repo:{self.repo_id}", [item["resource"] for item in self.hub.leases.list() if item["owner"] == self.task_id])
+
+    def test_conflict_after_a_terminal_transition_does_not_raise(self):
+        # The other half of the guard: already-terminal states also have no
+        # FAILED_INFRA edge, and must not be overwritten.
+        self.ready()
+
+        def terminal_then_conflict(task_id, *_):
+            self.hub.tasks.transition(task_id, "BLOCKED_QUALITY", reason="synthetic terminal state")
+            raise ConflictError("resource already leased: ollama:inference held by task-other")
+
+        report = self.hub.orchestrator.complete_guided(self.task_id, terminal_then_conflict, adapter="codex-local")
+        self.assertFalse(report["verified"])
+        self.assertEqual(report["task"]["state"], "BLOCKED_QUALITY")
+        self.assertIn("synthetic terminal state", report["task"]["reason"])
+        self.assertLeaseIsGenuinelyFree(f"repo:{self.repo_id}")
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ class GuidedPlanStore:
             evidence = [item for item in (row["packet_hash"], result_hash, quality_digest) if item]
             checkpoint = self.dossier.checkpoint(
                 task["system_id"],
-                f"packet-{packet_id}-{status}-{attempts}",
+                self._packet_phase(connection, task_id, packet_id, status, attempts),
                 "LOCAL_IMPLEMENTING",
                 {"actor": "broker", "policy_hash": task["policy_hash"], "classification": task["classification"], "evidence": evidence, "packet_id": packet_id, "packet_status": status, "unresolved_risks": [] if status == "passed" else [f"packet {packet_id} is {status}"]},
                 task_id=task_id,
@@ -134,6 +134,41 @@ class GuidedPlanStore:
                 system_id=task["system_id"], task_id=task_id, connection=connection,
             )
         return self.get(task_id)
+
+    @staticmethod
+    def _packet_phase(connection, task_id: str, packet_id: str, status: str, attempts: int) -> str:
+        """Disambiguate the checkpoint phase across repeated runs of one task.
+
+        `checkpoints` is keyed both by `checkpoint_id`
+        (`{task_id}:{phase}:{state}`, PRIMARY KEY) and by `checkpoint_hash`
+        (UNIQUE), and phase feeds the hash material. The base phase here is a
+        pure function of (packet, status, attempts), so a task that runs the
+        same packet to the same status twice re-emits a byte-identical
+        checkpoint and the insert fails.
+
+        That is reachable: a task ending in a resumable terminal state (a
+        worker losing a race for a shared resource, or the `OSError` path)
+        goes FAILED_INFRA -> `resume` -> re-run, and the re-run replays the
+        packets from the top. Before this counter the replay died on
+        `sqlite3.IntegrityError` with the driver never called, leaving the
+        task in LOCAL_IMPLEMENTING and un-rerunnable forever -- strictly worse
+        than the stranded lease the FAILED_INFRA exit exists to avoid.
+
+        `TaskManager.transition` solves the same problem by counting rows for
+        the task in the target state, because there `state` is a stable column
+        holding the phase base. Guided packets have no such column -- every
+        packet checkpoint is LOCAL_IMPLEMENTING -- so the count has to match on
+        `phase` itself: the base, plus any previously suffixed occurrence.
+        `ID_RE` admits `_`, which is a LIKE wildcard, so the prefix pattern is
+        escaped rather than interpolated raw.
+        """
+        base = f"packet-{packet_id}-{status}-{attempts}"
+        pattern = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        occurrence = connection.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE task_id=? AND (phase=? OR phase LIKE ? ESCAPE '\\')",
+            (task_id, base, f"{pattern}-%"),
+        ).fetchone()[0]
+        return base if occurrence == 0 else f"{base}-{occurrence + 1}"
 
     @staticmethod
     def _validate(template: Any, task_id: str, system_id: str, repositories: set[str]) -> dict[str, Any]:
